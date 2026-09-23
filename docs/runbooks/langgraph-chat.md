@@ -94,11 +94,13 @@ OPENINFERENCE_HIDE_OUTPUT_MESSAGES=false
 ```
 
 Phoenix project `victus-local` shows one chat trace rooted at `webapp.chat.stream`, followed by
-`gateway.agent.request`, `agent.http.chat`, and LangGraph nodes. The `llm.agent_decision` span
-shows the exact provider-bound input JSON plus readable OpenInference input messages, advertised
-tool schemas, invocation parameters, output message, and output tool calls. Inspect
-`victus.decision`, `victus.tool.status`, and `victus.clarification.missing_fields` before using raw
-debug output.
+`gateway.agent.request`, `agent.http.chat`, and an `agent.turn` span of kind `AGENT`. Its readable
+children are `agent.safety_precheck`, `agent.decision`, `tool.event_capture`, and
+`agent.final_response`. Application spans show concise semantic inputs and outputs. Their LLM
+children, such as `llm.agent_decision`, retain the exact provider-bound input JSON, OpenInference
+messages, advertised tool schemas, invocation parameters, output message, tool calls, and token
+usage. LangGraph auto-instrumentation is disabled deliberately: graph state is not replicated into
+the operational trace because OpenTelemetry attributes are not an archival store.
 
 # Troubleshooting
 

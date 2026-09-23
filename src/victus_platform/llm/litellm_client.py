@@ -21,7 +21,7 @@ class LiteLLMClient:
         with trace_llm_call(request, parent_context=parent_context) as span:
             raw = litellm.completion(**self._kwargs(request))
             raw_data = raw.model_dump() if hasattr(raw, "model_dump") else dict(raw)
-            record_llm_response(span, raw_data)
+            record_llm_response(span, raw_data, redact_content=request.redact_content)
             response = self._to_response(raw_data)
             record_llm_usage(span, response.usage)
             return response

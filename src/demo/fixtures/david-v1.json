@@ -1,0 +1,20 @@
+{
+  "profile_version": "david-v1",
+  "read_only": true,
+  "display_name": "David",
+  "objective": "Improve body composition through sustainable nutrition and three weekly strength sessions.",
+  "preferences": ["simple meals", "high adherence", "repeatable grocery list"],
+  "restrictions": ["no critical food allergies"],
+  "routine": "Strength training three times per week in the late afternoon.",
+  "biometrics": {"weight_kg": 82, "sleep_hours": 7.1, "energy_out_of_10": 7, "adherence_percent": 84},
+  "nutrition_targets": {"calories": 2400, "protein_g": 170, "carbohydrates_g": 270, "fat_g": 75},
+  "current_diet": [
+    {"day": "Monday", "meals": [{"name": "Greek yogurt oats", "calories": 520, "protein_g": 35, "carbohydrates_g": 65, "fat_g": 13}, {"name": "Chicken rice bowl", "calories": 760, "protein_g": 55, "carbohydrates_g": 85, "fat_g": 18}, {"name": "Salmon potatoes", "calories": 700, "protein_g": 45, "carbohydrates_g": 65, "fat_g": 28}, {"name": "Fruit and whey", "calories": 420, "protein_g": 35, "carbohydrates_g": 45, "fat_g": 12}], "calories": 2400, "protein_g": 170, "carbohydrates_g": 260, "fat_g": 71},
+    {"day": "Tuesday", "meals": [{"name": "Egg toast", "calories": 500, "protein_g": 32, "carbohydrates_g": 55, "fat_g": 17}, {"name": "Turkey pasta", "calories": 750, "protein_g": 52, "carbohydrates_g": 90, "fat_g": 18}, {"name": "Beef stir fry", "calories": 710, "protein_g": 48, "carbohydrates_g": 68, "fat_g": 27}, {"name": "Cottage cheese fruit", "calories": 430, "protein_g": 38, "carbohydrates_g": 48, "fat_g": 10}], "calories": 2390, "protein_g": 170, "carbohydrates_g": 261, "fat_g": 72},
+    {"day": "Wednesday", "meals": [{"name": "Protein oatmeal", "calories": 510, "protein_g": 36, "carbohydrates_g": 63, "fat_g": 13}, {"name": "Tuna potato salad", "calories": 720, "protein_g": 50, "carbohydrates_g": 78, "fat_g": 22}, {"name": "Chicken wraps", "calories": 730, "protein_g": 52, "carbohydrates_g": 82, "fat_g": 21}, {"name": "Yogurt berries", "calories": 430, "protein_g": 34, "carbohydrates_g": 46, "fat_g": 12}], "calories": 2390, "protein_g": 172, "carbohydrates_g": 269, "fat_g": 68},
+    {"day": "Thursday", "meals": [{"name": "Greek yogurt oats", "calories": 520, "protein_g": 35, "carbohydrates_g": 65, "fat_g": 13}, {"name": "Chicken rice bowl", "calories": 760, "protein_g": 55, "carbohydrates_g": 85, "fat_g": 18}, {"name": "Salmon potatoes", "calories": 700, "protein_g": 45, "carbohydrates_g": 65, "fat_g": 28}, {"name": "Fruit and whey", "calories": 420, "protein_g": 35, "carbohydrates_g": 45, "fat_g": 12}], "calories": 2400, "protein_g": 170, "carbohydrates_g": 260, "fat_g": 71},
+    {"day": "Friday", "meals": [{"name": "Egg toast", "calories": 500, "protein_g": 32, "carbohydrates_g": 55, "fat_g": 17}, {"name": "Turkey pasta", "calories": 750, "protein_g": 52, "carbohydrates_g": 90, "fat_g": 18}, {"name": "Beef stir fry", "calories": 710, "protein_g": 48, "carbohydrates_g": 68, "fat_g": 27}, {"name": "Cottage cheese fruit", "calories": 430, "protein_g": 38, "carbohydrates_g": 48, "fat_g": 10}], "calories": 2390, "protein_g": 170, "carbohydrates_g": 261, "fat_g": 72},
+    {"day": "Saturday", "meals": [{"name": "Protein oatmeal", "calories": 510, "protein_g": 36, "carbohydrates_g": 63, "fat_g": 13}, {"name": "Tuna potato salad", "calories": 720, "protein_g": 50, "carbohydrates_g": 78, "fat_g": 22}, {"name": "Chicken wraps", "calories": 730, "protein_g": 52, "carbohydrates_g": 82, "fat_g": 21}, {"name": "Yogurt berries", "calories": 430, "protein_g": 34, "carbohydrates_g": 46, "fat_g": 12}], "calories": 2390, "protein_g": 172, "carbohydrates_g": 269, "fat_g": 68},
+    {"day": "Sunday", "meals": [{"name": "Greek yogurt oats", "calories": 520, "protein_g": 35, "carbohydrates_g": 65, "fat_g": 13}, {"name": "Chicken rice bowl", "calories": 760, "protein_g": 55, "carbohydrates_g": 85, "fat_g": 18}, {"name": "Salmon potatoes", "calories": 700, "protein_g": 45, "carbohydrates_g": 65, "fat_g": 28}, {"name": "Fruit and whey", "calories": 420, "protein_g": 35, "carbohydrates_g": 45, "fat_g": 12}], "calories": 2400, "protein_g": 170, "carbohydrates_g": 260, "fat_g": 71}
+  ]
+}

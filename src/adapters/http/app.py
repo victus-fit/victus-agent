@@ -14,6 +14,15 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from demo.auth import (
+    DemoAuthConfigurationError,
+    DemoTokenError,
+    DemoTokenVerifier,
+)
+from demo.contracts import DemoChatRequest, DemoChatResponse
+from demo.fixture import load_david_fixture
+from demo.policy import denied_demo_message, is_disallowed_demo_input
+from demo.runtime import DemoRuntimeConfigurationError, DemoSessionManager
 from adapters.http.auth import BackendIdentityResolver, IdentityResolver
 from adapters.langgraph.capabilities.contracts import (
     ChatDebugExecution,
@@ -32,7 +41,9 @@ from victus_platform.llm.factory import build_llm_client
 from victus_platform.telemetry.phoenix import (
     initialize_phoenix,
     phoenix_context,
+    record_application_output,
     shutdown_phoenix,
+    trace_application_span,
     trace_chat_request,
 )
 
@@ -70,8 +81,23 @@ def create_app(
     graph: Any | None = None,
     identity_resolver: IdentityResolver | None = None,
     debug_enabled: bool | None = None,
+    demo_session_manager: DemoSessionManager | None = None,
+    demo_token_verifier: DemoTokenVerifier | None = None,
 ) -> Starlette:
     resolver = identity_resolver or BackendIdentityResolver()
+    demo_configuration_error = False
+    try:
+        demo_sessions = demo_session_manager or DemoSessionManager(llm_client=build_llm_client())
+    except DemoRuntimeConfigurationError:
+        demo_sessions = None
+        demo_configuration_error = True
+    demo_fixture = load_david_fixture()
+    demo_auth_configuration_error = False
+    try:
+        verifier = demo_token_verifier or DemoTokenVerifier.from_environment()
+    except DemoAuthConfigurationError:
+        verifier = None
+        demo_auth_configuration_error = True
     debug_route_enabled = (
         _environment_flag("VICTUS_CHAT_DEBUG_ENABLED") if debug_enabled is None else debug_enabled
     )
@@ -193,7 +219,24 @@ def create_app(
                         "graph_version": GRAPH_VERSION,
                     },
                 ):
-                    result = await request.app.state.graph.ainvoke(graph_input, config=config)
+                    with trace_application_span(
+                        "agent.turn",
+                        input_value=payload.message,
+                        attributes={
+                            "victus.conversation_id": payload.conversation_id,
+                            "victus.request_id": payload.request_id,
+                            "victus.resumed": payload.resume is not None,
+                        },
+                        span_kind="AGENT",
+                    ) as span:
+                        result = await request.app.state.graph.ainvoke(graph_input, config=config)
+                        response_state = result.get("response", {})
+                        response_message = str(response_state.get("user_message") or "")
+                        record_application_output(
+                            span,
+                            response_message or "Turn completed",
+                            {"victus.response.mode": str(response_state.get("mode") or "unknown")},
+                        )
         except Exception as exc:
             body: dict[str, Any] = {"error": "agent execution failed"}
             if include_debug:
@@ -241,6 +284,101 @@ def create_app(
             return JSONResponse({"error": "not found"}, status_code=404)
         return await handle_chat(request, include_debug=True)
 
+    async def demo_chat(request: Request) -> JSONResponse:
+        token = _bearer_token(request)
+        if token is None:
+            return JSONResponse({"error": "missing bearer token"}, status_code=401)
+        if (
+            demo_auth_configuration_error
+            or demo_configuration_error
+            or verifier is None
+            or demo_sessions is None
+        ):
+            return JSONResponse({"error": "demo unavailable"}, status_code=503)
+        try:
+            identity = verifier.verify(token, profile_version=demo_fixture.profile_version)
+        except DemoTokenError as exc:
+            return JSONResponse({"error": "demo authorization failed"}, status_code=exc.status_code)
+        try:
+            payload = DemoChatRequest.model_validate(await request.json())
+        except (ValidationError, ValueError):
+            return JSONResponse({"error": "invalid request"}, status_code=422)
+
+        try:
+            with trace_application_span(
+                "agent.turn",
+                input_value=payload.message,
+                attributes={
+                    "victus.demo": True,
+                    "victus.demo.fixture_version": identity.profile_version,
+                    "victus.execution_mode": "demo",
+                },
+                span_kind="AGENT",
+            ) as span:
+                with phoenix_context(
+                    session_id=identity.session_id,
+                    user_id=identity.subject,
+                    metadata={
+                        "fixture_version": identity.profile_version,
+                        "execution_mode": "demo",
+                    },
+                ):
+                    with trace_application_span(
+                        "demo.policy_precheck",
+                        input_value=payload.message,
+                        attributes={"victus.demo": True},
+                        span_kind="CHAIN",
+                    ) as policy_span:
+                        policy_denied = is_disallowed_demo_input(payload.message)
+                        record_application_output(
+                            policy_span,
+                            "Denied" if policy_denied else "Allowed",
+                            {"victus.demo.policy_denied": policy_denied},
+                        )
+                    if policy_denied:
+                        response = DemoChatResponse(
+                            message=denied_demo_message(payload.language),
+                            profile_version=demo_fixture.profile_version,
+                        )
+                    else:
+                        result = await demo_sessions.invoke(
+                            session_id=identity.session_id,
+                            graph_input={
+                                "request": {
+                                    "request_id": payload.request_id,
+                                    "user_id": f"demo:david:{identity.session_id}",
+                                    "raw_text": payload.message,
+                                    "conversation_id": identity.session_id,
+                                    "locale": payload.language,
+                                    "execution_mode": "demo",
+                                    "demo_profile": demo_fixture.model_dump(mode="json"),
+                                }
+                            },
+                        )
+                        response_state = result.get("response", {})
+                        interrupts = result.get("__interrupt__") or []
+                        if interrupts:
+                            first = interrupts[0]
+                            value = first.value if hasattr(first, "value") else {}
+                            message = str(value.get("question") or "Se necesita una respuesta.")
+                        else:
+                            message = str(response_state.get("user_message") or "")
+                        response = DemoChatResponse(
+                            message=message or "No fue posible completar la demo.",
+                            profile_version=demo_fixture.profile_version,
+                        )
+                record_application_output(
+                    span,
+                    response.message,
+                    {
+                        "victus.demo.read_only": True,
+                        "victus.demo.policy_denied": policy_denied,
+                    },
+                )
+        except Exception:
+            return JSONResponse({"error": "demo unavailable"}, status_code=503)
+        return JSONResponse(response.model_dump(mode="json"))
+
     return Starlette(
         debug=False,
         lifespan=lifespan,
@@ -248,6 +386,7 @@ def create_app(
             Route("/health", health),
             Route("/chat", chat, methods=["POST"]),
             Route("/chat/debug", chat_debug, methods=["POST"]),
+            Route("/demo/chat", demo_chat, methods=["POST"]),
         ],
     )
 

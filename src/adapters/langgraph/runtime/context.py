@@ -12,7 +12,7 @@ from domain.shared.text import normalize_text
 from tools.catalog import list_tools
 from victus_platform.safety.rules import SafetyPrecheck, SafetyPrecheckInput
 
-AGENT_ENABLED_TOOLS = frozenset({"event_capture"})
+AGENT_ENABLED_TOOLS = frozenset({"event_capture", "evidence_retrieval"})
 
 
 def normalize_request(state: VictusGraphState) -> VictusGraphState:
@@ -160,21 +160,24 @@ def _allowed_safety() -> dict[str, object]:
     }
 
 
-def tool_registry(state: VictusGraphState) -> VictusGraphState:
-    safety = state.get("safety", {})
-    if safety.get("status") == "blocked":
-        allowed_tools: list[str] = []
-    else:
-        allowed_tools = [
-            tool.name
-            for tool in list_tools(exposure="langgraph")
-            if tool.name in AGENT_ENABLED_TOOLS
-        ]
+def tool_registry(*, enabled_tools: frozenset[str] = AGENT_ENABLED_TOOLS):
+    def node(state: VictusGraphState) -> VictusGraphState:
+        safety = state.get("safety", {})
+        if safety.get("status") == "blocked":
+            allowed_tools: list[str] = []
+        else:
+            allowed_tools = [
+                tool.name
+                for tool in list_tools(exposure="langgraph")
+                if tool.name in enabled_tools
+            ]
 
-    tool_context = dict(state.get("tool_context", {}))
-    tool_context["allowed_tools"] = allowed_tools
-    tool_context.setdefault("tool_results", [])
-    return _merge(state, tool_context=tool_context, node_name="tool_registry")
+        tool_context = dict(state.get("tool_context", {}))
+        tool_context["allowed_tools"] = allowed_tools
+        tool_context.setdefault("tool_results", [])
+        return _merge(state, tool_context=tool_context, node_name="tool_registry")
+
+    return node
 
 
 def safety_blocked_response(state: VictusGraphState) -> VictusGraphState:

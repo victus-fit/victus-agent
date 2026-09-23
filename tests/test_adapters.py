@@ -44,9 +44,10 @@ def test_langgraph_executes_runtime_and_blocks_unsafe_turns() -> None:
         )
     )
     assert allowed["tool_context"]["last_tool_result"]["data"]["capture_action"] == "log_meal"
-    assert allowed["tool_context"]["allowed_tools"] == ["event_capture"]
+    assert allowed["tool_context"]["allowed_tools"] == ["event_capture", "evidence_retrieval"]
     assert [tool["function"]["name"] for tool in client.requests[0].tools or []] == [
-        "event_capture"
+        "event_capture",
+        "evidence_retrieval",
     ]
     assert allowed["audit"]["node_path"][-1] == "finalize_turn"
     assert "intent" not in allowed

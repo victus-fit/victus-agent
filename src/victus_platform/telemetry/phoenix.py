@@ -17,7 +17,7 @@ def initialize_phoenix() -> Any | None:
             "Phoenix tracing is enabled but the 'phoenix' optional dependencies are not installed"
         ) from exc
 
-    return register(auto_instrument=True, batch=True, verbose=False)
+    return register(auto_instrument=False, batch=True, verbose=False)
 
 
 def shutdown_phoenix(provider: Any | None) -> None:
@@ -52,7 +52,15 @@ def capture_phoenix_trace_context() -> Any | None:
         raise RuntimeError(
             "Phoenix tracing is enabled but the 'phoenix' optional dependencies are not installed"
         ) from exc
-    if parent_span := get_current_span():
+    return _current_trace_context(trace, context, get_current_span)
+
+
+def _current_trace_context(trace: Any, context: Any, get_langchain_span: Any) -> Any:
+    """Prefer the active application span over framework instrumentation context."""
+    active_span = trace.get_current_span()
+    if active_span and active_span.is_recording():
+        return trace.set_span_in_context(active_span)
+    if parent_span := get_langchain_span():
         return trace.set_span_in_context(parent_span)
     return context.get_current()
 
@@ -114,6 +122,59 @@ def set_current_span_attributes(attributes: Mapping[str, Any]) -> None:
 
 
 @contextmanager
+def trace_application_span(
+    name: str,
+    *,
+    input_value: str,
+    attributes: Mapping[str, Any] | None = None,
+    span_kind: str = "CHAIN",
+) -> Iterator[Any | None]:
+    """Record a concise application operation while preserving raw child spans separately."""
+    if not _environment_flag("PHOENIX_TRACING_ENABLED"):
+        yield None
+        return
+    try:
+        from opentelemetry import trace
+        from opentelemetry.trace import Status, StatusCode
+        from phoenix.otel import OpenInferenceSpanKindValues, SpanAttributes
+    except ImportError as exc:
+        raise RuntimeError(
+            "Phoenix tracing is enabled but the 'phoenix' optional dependencies are not installed"
+        ) from exc
+
+    tracer = trace.get_tracer("victus-agent.application")
+    kind = getattr(OpenInferenceSpanKindValues, span_kind).value
+    with tracer.start_as_current_span(name) as span:
+        span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, kind)
+        span.set_attribute(SpanAttributes.INPUT_VALUE, input_value)
+        span.set_attribute(SpanAttributes.INPUT_MIME_TYPE, "text/plain")
+        set_current_span_attributes({"victus.layer": "application", **(attributes or {})})
+        try:
+            yield span
+        except Exception as exc:
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR, str(exc)))
+            raise
+        else:
+            span.set_status(Status(StatusCode.OK))
+
+
+def record_application_output(
+    span: Any | None,
+    output_value: str,
+    attributes: Mapping[str, Any] | None = None,
+) -> None:
+    """Attach human-readable outcome attributes to an application span."""
+    if span is None:
+        return
+    from phoenix.otel import SpanAttributes
+
+    span.set_attribute(SpanAttributes.OUTPUT_VALUE, output_value)
+    span.set_attribute(SpanAttributes.OUTPUT_MIME_TYPE, "text/plain")
+    set_current_span_attributes(attributes or {})
+
+
+@contextmanager
 def trace_llm_call(request: Any, *, parent_context: Any | None = None) -> Iterator[Any | None]:
     if not _environment_flag("PHOENIX_TRACING_ENABLED"):
         yield None
@@ -135,14 +196,24 @@ def trace_llm_call(request: Any, *, parent_context: Any | None = None) -> Iterat
         )
         span.set_attribute(SpanAttributes.LLM_MODEL_NAME, str(request.model))
         span.set_attribute("victus.llm.operation", str(request.operation))
-        _record_llm_request(span, request, SpanAttributes)
+        if request.redact_content:
+            span.set_attribute(SpanAttributes.INPUT_VALUE, "[redacted]")
+            span.set_attribute(SpanAttributes.INPUT_MIME_TYPE, "text/plain")
+            span.set_attribute("victus.llm.content_redacted", True)
+        else:
+            _record_llm_request(span, request, SpanAttributes)
         for key, value in request.metadata.items():
             if _safe_attribute(key, value):
                 span.set_attribute(f"victus.metadata.{key}", value)
         yield span
 
 
-def record_llm_response(span: Any | None, raw_response: Mapping[str, Any]) -> None:
+def record_llm_response(
+    span: Any | None,
+    raw_response: Mapping[str, Any],
+    *,
+    redact_content: bool = False,
+) -> None:
     """Record the provider response using Phoenix's OpenInference LLM attributes."""
     if span is None:
         return
@@ -152,6 +223,11 @@ def record_llm_response(span: Any | None, raw_response: Mapping[str, Any]) -> No
     choice = choices[0] if isinstance(choices, list) and choices else None
     message = choice.get("message") if isinstance(choice, Mapping) else None
     if not isinstance(message, Mapping):
+        return
+
+    if redact_content:
+        span.set_attribute(SpanAttributes.OUTPUT_VALUE, "[redacted]")
+        span.set_attribute(SpanAttributes.OUTPUT_MIME_TYPE, "text/plain")
         return
 
     normalized = _normalized_message(message)

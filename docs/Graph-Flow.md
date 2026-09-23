@@ -72,8 +72,10 @@ new route at `ingest_turn`.
 - `tool_registry`
   Module: `runtime/context.py`.
   Route: `safety_precheck[allowed] -> agent_decision`.
-  Enables only `event_capture` for LangGraph model selection. The remaining canonical tools stay
-  available through MCP and CLI but are inactive in chat until explicitly enabled here.
+  Enables `event_capture` and the read-only `evidence_retrieval` tool for LangGraph model
+  selection. The graph receives this allowlist from its execution profile; production and demo both
+  currently expose these two tools, while demo substitutes ephemeral adapters for stateful effects.
+  `evidence_retrieval` is intentionally inactive in MCP and CLI in this first release.
 
 - `agent_decision`
   Module: `engine/agent.py`.

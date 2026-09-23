@@ -13,6 +13,9 @@ Canonical registry: `src/tools/catalog.py`
 - `event_capture` — Captures meals and beverages from food items with required numeric quantities
   in grams (`g`) or milliliters (`ml`); occurrence time defaults to today. Path:
   `src/tools/event_capture/tool.py`
+- `evidence_retrieval` — Retrieves bounded, traceable scientific evidence from the private
+  `victus-rag` API for LangGraph synthesis. It is read-only and initially unavailable through MCP
+  and CLI. Path: `src/tools/evidence_retrieval/tool.py`
 
 ## Tool Result Contract
 
@@ -77,3 +80,10 @@ Rules:
 - `error` means execution failed unexpectedly.
 - `events_emitted` contains references only after durable persistence.
 - Unvalidated model output must never become persisted tool state.
+
+## Demo execution profile
+
+The public demo uses the same LangGraph tool catalog with an explicit allowlist. `event_capture`
+writes only to an in-memory session event sink; `evidence_retrieval` remains a read-only RAG call.
+No other tool is implicitly enabled for demo. See
+[Public-Demo.md](contracts/agent/Public-Demo.md) for the authorization and TTL boundary.

@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from tools.contracts import ToolExecution, ToolExposure, ToolResult
 from tools.event_capture.contract import EventCaptureInput
 from tools.event_capture.tool import execute as execute_event_capture
+from tools.evidence_retrieval.contract import EvidenceRetrievalInput
+from tools.evidence_retrieval.tool import execute as execute_evidence_retrieval
 
 ToolImplementation = Callable[..., ToolExecution | Any]
 ALL_EXPOSURES = frozenset({"langgraph", "mcp", "cli", "test"})
@@ -24,6 +26,12 @@ def _description(name: str) -> str:
             "preferences or restrictions, "
             "future goals or plans, feedback, profile reads, symptoms, biometrics, or lifestyle "
             "metrics."
+        ),
+        "evidence_retrieval": (
+            "Use when the user asks for scientific evidence, studies, or support for a health or "
+            "nutrition claim. Search with a focused query and cite the retrieved evidence in the "
+            "final answer. Do not use for meal logging, preferences, direct medical diagnosis, or "
+            "when a general conversational response is sufficient."
         ),
     }[name]
 
@@ -51,7 +59,24 @@ class ToolDefinition:
 
 
 _DEFINITIONS = (
-    ("event_capture", EventCaptureInput, execute_event_capture, "capture", "high", True),
+    (
+        "event_capture",
+        EventCaptureInput,
+        execute_event_capture,
+        "capture",
+        "high",
+        True,
+        ALL_EXPOSURES,
+    ),
+    (
+        "evidence_retrieval",
+        EvidenceRetrievalInput,
+        execute_evidence_retrieval,
+        "retrieval",
+        "low",
+        False,
+        frozenset({"langgraph", "test"}),
+    ),
 )
 
 TOOL_DEFINITIONS = {
@@ -63,12 +88,12 @@ TOOL_DEFINITIONS = {
         risk=risk,
         side_effects=side_effects,
         requires_identity=True,
-        exposures=ALL_EXPOSURES,
+        exposures=exposures,
         input_model=input_model,
         output_model=ToolResult,
         implementation=implementation,
     )
-    for name, input_model, implementation, category, risk, side_effects in _DEFINITIONS
+    for name, input_model, implementation, category, risk, side_effects, exposures in _DEFINITIONS
 }
 
 

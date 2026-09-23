@@ -6,6 +6,7 @@ from typing import Iterator
 
 from tools.runtime import ToolRuntime
 from tools.contracts import ToolResult, ToolSafety, ToolServices
+from tools.evidence_retrieval.remote import VictusRAGEvidenceGateway
 from victus_platform.identity.profile_gateway import BackendProfileGateway
 from victus_platform.safety.rules import SafetyPrecheck, SafetyPrecheckInput
 from victus_platform.telemetry import new_trace_id
@@ -46,7 +47,16 @@ def projection_repository_scope() -> Iterator[object | None]:
 def build_runtime() -> ToolRuntime:
     return ToolRuntime(
         event_store_scope=event_store_scope,
-        services=ToolServices({"profile_gateway": BackendProfileGateway()}),
+        services=ToolServices(
+            {
+                "profile_gateway": BackendProfileGateway(),
+                "evidence_retrieval_gateway": VictusRAGEvidenceGateway(
+                    base_url=os.getenv("VICTUS_RAG_API_URL", ""),
+                    api_token=os.getenv("VICTUS_RAG_API_TOKEN", ""),
+                    timeout_seconds=float(os.getenv("VICTUS_RAG_API_TIMEOUT_SECONDS", "10")),
+                ),
+            }
+        ),
         trace_id_factory=new_trace_id,
         precheck=safety_precheck,
     )

@@ -14,6 +14,7 @@ from tools.runtime import ToolRuntime
 from victus_platform.llm.contracts import LLMRequest, LLMResponse
 from victus_platform.llm.litellm_client import LiteLLMClient
 from victus_platform.telemetry.phoenix import (
+    _current_trace_context,
     capture_phoenix_trace_context,
     initialize_phoenix,
     record_llm_response,
@@ -275,6 +276,54 @@ def test_phoenix_tracing_is_disabled_by_default(monkeypatch) -> None:
     assert capture_phoenix_trace_context() is None
     with trace_llm_call(object()) as span:
         assert span is None
+
+
+def test_llm_context_prefers_active_application_span() -> None:
+    application_span = RecordingSpan(recording=True)
+    framework_span = RecordingSpan(recording=True)
+    trace = FakeTrace(application_span)
+    context = FakeContext()
+
+    resolved = _current_trace_context(trace, context, lambda: framework_span)
+
+    assert resolved == ("span-context", application_span)
+    assert trace.context_spans == [application_span]
+
+
+def test_llm_context_falls_back_to_framework_span_when_no_application_span_is_active() -> None:
+    framework_span = RecordingSpan(recording=True)
+    trace = FakeTrace(RecordingSpan(recording=False))
+    context = FakeContext()
+
+    resolved = _current_trace_context(trace, context, lambda: framework_span)
+
+    assert resolved == ("span-context", framework_span)
+
+
+class RecordingSpan:
+    def __init__(self, *, recording: bool) -> None:
+        self.recording = recording
+
+    def is_recording(self) -> bool:
+        return self.recording
+
+
+class FakeTrace:
+    def __init__(self, current_span) -> None:
+        self.current_span = current_span
+        self.context_spans = []
+
+    def get_current_span(self):
+        return self.current_span
+
+    def set_span_in_context(self, span):
+        self.context_spans.append(span)
+        return ("span-context", span)
+
+
+class FakeContext:
+    def get_current(self):
+        return "ambient-context"
 
 
 def test_phoenix_llm_attributes_expose_messages_tools_and_tool_calls() -> None:

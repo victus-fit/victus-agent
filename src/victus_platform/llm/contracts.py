@@ -14,6 +14,7 @@ class LLMRequest:
     response_format: dict[str, Any] | None = None
     tools: list[dict[str, Any]] | None = None
     tool_choice: str | dict[str, Any] | None = None
+    redact_content: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
