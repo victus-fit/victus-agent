@@ -58,16 +58,9 @@ class RetrievedEvidence(BaseModel):
 
     canonical_evidence_id: str
     paper_id: str | None = None
+    paper_title: str
     evidence_text: str
     source_block_ids: list[str] = Field(default_factory=list)
-    evidence_type: str | None = None
-    assertion_type: str | None = None
-    organism: str | None = None
-    population: str | None = None
-    intervention_or_exposure: str | None = None
-    comparator: str | None = None
-    outcomes: list[str] | None = None
-    duration: str | None = None
 
 
 class EvidenceSearchResult(BaseModel):

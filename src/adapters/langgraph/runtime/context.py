@@ -12,7 +12,7 @@ from domain.shared.text import normalize_text
 from tools.catalog import list_tools
 from victus_platform.safety.rules import SafetyPrecheck, SafetyPrecheckInput
 
-AGENT_ENABLED_TOOLS = frozenset({"event_capture", "evidence_retrieval"})
+AGENT_ENABLED_TOOLS = frozenset({"event_capture", "evidence_retrieval", "profile"})
 
 
 def normalize_request(state: VictusGraphState) -> VictusGraphState:

@@ -19,7 +19,8 @@ class RequestState(TypedDict, total=False):
     timezone: str
     conversation_id: str
     execution_mode: str
-    demo_profile: dict[str, Any]
+    demo_session_id: str
+    demo_state: dict[str, Any]
 
 
 class SafetyState(TypedDict, total=False):

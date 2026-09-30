@@ -50,16 +50,6 @@ def _result_data(result) -> dict[str, object]:
     return {
         "rank": result.rank,
         "score": result.score,
-        "canonical_evidence_id": evidence.canonical_evidence_id,
-        "paper_id": evidence.paper_id,
+        "paper_title": evidence.paper_title,
         "evidence_text": evidence.evidence_text[:MAX_EVIDENCE_TEXT_CHARS],
-        "source_block_ids": evidence.source_block_ids,
-        "evidence_type": evidence.evidence_type,
-        "assertion_type": evidence.assertion_type,
-        "organism": evidence.organism,
-        "population": evidence.population,
-        "intervention_or_exposure": evidence.intervention_or_exposure,
-        "comparator": evidence.comparator,
-        "outcomes": evidence.outcomes,
-        "duration": evidence.duration,
     }

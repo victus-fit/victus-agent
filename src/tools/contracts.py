@@ -67,6 +67,7 @@ class ToolContext(ContractModel):
     original_text: str | None = None
     trace_id: str | None = None
     idempotency_key: str | None = None
+    session_id: str | None = None
 
 
 class ToolInvocation(ContractModel):
@@ -84,6 +85,9 @@ class ToolServices:
             return self.values[name]
         except KeyError as exc:
             raise RuntimeError(f"missing tool service: {name}") from exc
+
+    def get(self, name: str) -> Any | None:
+        return self.values.get(name)
 
 
 @dataclass(frozen=True)

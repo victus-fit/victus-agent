@@ -12,6 +12,11 @@ from tools.event_capture.contract import EventCaptureInput
 from tools.event_capture.tool import execute as execute_event_capture
 from tools.evidence_retrieval.contract import EvidenceRetrievalInput
 from tools.evidence_retrieval.tool import execute as execute_evidence_retrieval
+from tools.profile.read_contract import ProfileReadInput
+from tools.profile.read_tool import execute as execute_profile_read
+from tools.profile.contract import ProfileUpdateInput
+from tools.profile.tool import execute as execute_profile_update
+from tools.diet_plan import DietPlanInput, execute as execute_diet_plan
 
 ToolImplementation = Callable[..., ToolExecution | Any]
 ALL_EXPOSURES = frozenset({"langgraph", "mcp", "cli", "test"})
@@ -33,6 +38,14 @@ def _description(name: str) -> str:
             "final answer. Do not use for meal logging, preferences, direct medical diagnosis, or "
             "when a general conversational response is sufficient."
         ),
+        "profile": (
+            "Use when the user asks about their current diet, latest logged meals, or basic "
+            "biometrics such as weight, sleep, energy, or adherence. Choose the narrowest section "
+            "that answers the question. Do not use for changing profile data, logging a meal, "
+            "or questions about another person."
+        ),
+        "profile_update": "Use when the user explicitly wants to add, modify, or remove a durable allergy, restriction, or preference.",
+        "diet_plan": "Use to create, refine, or activate a personalized diet plan after considering the user's profile and restrictions.",
     }[name]
 
 
@@ -77,6 +90,17 @@ _DEFINITIONS = (
         False,
         frozenset({"langgraph", "test"}),
     ),
+    (
+        "profile",
+        ProfileReadInput,
+        execute_profile_read,
+        "retrieval",
+        "low",
+        False,
+        frozenset({"langgraph", "test"}),
+    ),
+    ("profile_update", ProfileUpdateInput, execute_profile_update, "profile", "high", True, frozenset({"langgraph", "test"})),
+    ("diet_plan", DietPlanInput, execute_diet_plan, "planning", "high", True, frozenset({"langgraph", "test"})),
 )
 
 TOOL_DEFINITIONS = {

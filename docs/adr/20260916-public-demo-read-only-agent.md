@@ -19,22 +19,23 @@ it had no LangGraph safety flow, tool selection, clarifications, RAG, or represe
 - Require issuer `victus-webapp`, a 30-second-or-less token lifetime, audience `victus-agent`, exact
   subject `demo:david`, `demo: true`, scopes `demo:chat` and `demo:read`, a versioned profile, a
   signed session identifier (`sid`), and single-use `jti`.
-- Load `src/demo/fixtures/david-v1.json` from the deployed artifact. It is repository-editable but
-  immutable at runtime. A future fixture is a new version, such as `david-v2`.
+- Seed the immutable `demo:david` base profile in the WebApp database and read it only through the
+  canonical `profile` tool. The agent never serializes the full profile into an LLM prompt.
 - Invoke the same LangGraph topology as `/chat`, with the normal safety precheck, LLM decision,
   clarification flow, canonical tools, response composition, and Phoenix spans.
-- The `demo` execution profile permits only explicitly mapped tools: `event_capture` persists into a
-  session-local in-memory event sink; `evidence_retrieval` calls the read-only Victus RAG gateway.
-  Product databases, profile gateways, external actions, and every future tool are denied by default.
+- The `demo` execution profile permits only explicitly mapped tools: `event_capture` writes to the
+  WebApp's temporary session store, `evidence_retrieval` calls the read-only Victus RAG gateway,
+  and `profile` reads David's persisted diet and basic biometrics through an authenticated internal
+  WebApp endpoint. Every other future tool is denied by default.
 - Each signed session gets independent in-memory LangGraph checkpoints, memory, and virtual events.
   They expire after `VICTUS_DEMO_SESSION_TTL_SECONDS` (15 minutes by default) and are never written
   to PostgreSQL.
 - Emit the same telemetry content and span structure as production, tagged with `victus.demo=true`,
-  `victus.execution_mode=demo`, and fixture version. Phoenix is therefore an internal trusted system.
+  `victus.execution_mode=demo`, and profile version. Phoenix is therefore an internal trusted system.
 
 ## Consequences
 
-The fixture is immutable, while a visitor can accumulate temporary context within one signed session.
+The base profile is immutable, while a visitor can accumulate temporary context within one signed session.
 Refreshing the public page must mint a new `sid`, which starts from `david-v1` again. The in-process
 session and replay caches are valid for the current single-process deployment; horizontal scaling
 requires shared TTL-backed implementations before adding another agent replica.

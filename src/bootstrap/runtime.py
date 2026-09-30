@@ -7,6 +7,8 @@ from typing import Iterator
 from tools.runtime import ToolRuntime
 from tools.contracts import ToolResult, ToolSafety, ToolServices
 from tools.evidence_retrieval.remote import VictusRAGEvidenceGateway
+from tools.profile.read_remote import WebAppProfileGateway
+from tools.profile.write_remote import WebAppProfileWriteGateway
 from victus_platform.identity.profile_gateway import BackendProfileGateway
 from victus_platform.safety.rules import SafetyPrecheck, SafetyPrecheckInput
 from victus_platform.telemetry import new_trace_id
@@ -50,6 +52,12 @@ def build_runtime() -> ToolRuntime:
         services=ToolServices(
             {
                 "profile_gateway": BackendProfileGateway(),
+                "profile_read_gateway": WebAppProfileGateway(
+                    base_url=os.getenv("VICTUS_DEMO_STATE_API_URL", ""),
+                    api_token=os.getenv("VICTUS_DEMO_STATE_API_TOKEN", ""),
+                ),
+                "profile_write_gateway": WebAppProfileWriteGateway(base_url=os.getenv("VICTUS_DEMO_STATE_API_URL", ""), api_token=os.getenv("VICTUS_DEMO_STATE_API_TOKEN", "")),
+                "diet_plan_gateway": WebAppProfileWriteGateway(base_url=os.getenv("VICTUS_DEMO_STATE_API_URL", ""), api_token=os.getenv("VICTUS_DEMO_STATE_API_TOKEN", "")),
                 "evidence_retrieval_gateway": VictusRAGEvidenceGateway(
                     base_url=os.getenv("VICTUS_RAG_API_URL", ""),
                     api_token=os.getenv("VICTUS_RAG_API_TOKEN", ""),

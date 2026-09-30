@@ -13,18 +13,23 @@ Do not set a private key, an HS256 secret, or a remote JWKS URL in the agent. To
 both public keys, sign new tokens with the new `kid`, then remove the retired key only after all
 30-second tokens have expired.
 
-## Configure ephemeral sessions
+## Configure ephemeral sessions and meal state
 
-The demo uses the same model configuration as `/chat`, but its checkpoints, memory and meal events
-are process-local and expire automatically. Configure a bounded TTL:
+The demo uses the same model configuration as `/chat`. Its checkpoints and memory are process-local
+and expire automatically, while temporary meals and biometrics are owned by the WebApp's demo store.
+Configure a bounded graph-session TTL and the authenticated internal WebApp endpoint:
 
 ```bash
 VICTUS_DEMO_SESSION_TTL_SECONDS=900
+VICTUS_DEMO_STATE_API_URL=http://victus-backend:8000
+VICTUS_DEMO_STATE_API_TOKEN=shared-demo-agent-token
 ```
 
-The allowed range is 1–3600 seconds. The default is 900 seconds. Do not deploy multiple agent
-replicas with this in-memory implementation; move the session and JWT-replay stores to shared TTL
-storage first.
+The allowed range is 1–3600 seconds. The default is 900 seconds. Set the same value as
+`VICTUS_DEMO_AGENT_API_TOKEN` in the WebApp environment; the endpoint is for agent-to-WebApp
+traffic only. Do not deploy
+multiple agent replicas with this in-memory checkpoint implementation; move the session and
+JWT-replay stores to shared TTL storage first.
 
 ## WebApp token requirement
 
@@ -40,11 +45,13 @@ uv run --extra test pytest tests/test_public_demo.py -q
 ```
 
 The test suite verifies ES256 audience, expiry, scope, profile-version, signed session, and replay
-denials. It also verifies that the standard graph exposes the demo-approved tools and that
-`event_capture` completes without a database-backed store. A valid demo token must be newly minted
+denials. It also verifies that the standard graph exposes the demo-approved tools, including
+read-only `profile`, and that `event_capture` completes through the temporary WebApp store. A valid demo token must be newly minted
 for every request because its `jti` is single use.
 
-## Fixture changes
+## Persisted David profile
 
-Review `src/demo/fixtures/david-v1.json` as product content. Never edit an already public fixture;
-copy it to `david-v2.json`, update the contract/version support, and deploy it as a new demo version.
+The WebApp owns the seeded `demo:david` profile. Update it through the WebApp's initialization and
+data migrations; do not reintroduce a static profile fixture in the agent. The agent's `profile`
+tool can read only David's latest logged diet and basic biometrics through
+`/internal/agent/profile`, protected by `VICTUS_DEMO_STATE_API_TOKEN`.

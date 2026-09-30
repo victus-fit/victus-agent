@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -9,6 +10,43 @@ from tools.evidence_retrieval.contract import EvidenceRetrievalInput, EvidenceSe
 
 class EvidenceRetrievalUnavailable(RuntimeError):
     pass
+
+
+def _minimal_response(payload: object) -> dict[str, Any]:
+    """Keep only the evidence text and source fields owned by this boundary."""
+    if not isinstance(payload, dict):
+        raise ValueError("response must be an object")
+    results = payload.get("results")
+    metadata = payload.get("metadata")
+    if not isinstance(results, list) or not isinstance(metadata, dict):
+        raise ValueError("response must contain results and metadata")
+    projected_results: list[dict[str, Any]] = []
+    for result in results:
+        if not isinstance(result, dict) or not isinstance(result.get("evidence"), dict):
+            raise ValueError("each result must contain evidence")
+        evidence = result["evidence"]
+        projected_results.append(
+            {
+                "rank": result.get("rank"),
+                "score": result.get("score"),
+                "evidence": {
+                    "canonical_evidence_id": evidence.get("canonical_evidence_id"),
+                    "paper_id": evidence.get("paper_id"),
+                    "paper_title": evidence.get("paper_title"),
+                    "evidence_text": evidence.get("evidence_text"),
+                    "source_block_ids": evidence.get("source_block_ids", []),
+                },
+            }
+        )
+    return {
+        "request_id": payload.get("request_id"),
+        "results": projected_results,
+        "metadata": {
+            "index_version": metadata.get("index_version"),
+            "retrieval_pipeline": metadata.get("retrieval_pipeline"),
+            "took_ms": metadata.get("took_ms"),
+        },
+    }
 
 
 @dataclass(frozen=True)
@@ -44,6 +82,6 @@ class VictusRAGEvidenceGateway:
             raise EvidenceRetrievalUnavailable("evidence retrieval is unavailable")
         try:
             response.raise_for_status()
-            return EvidenceSearchResponse.model_validate(response.json())
+            return EvidenceSearchResponse.model_validate(_minimal_response(response.json()))
         except (httpx.HTTPStatusError, ValueError) as exc:
             raise EvidenceRetrievalUnavailable("evidence retrieval returned an invalid response") from exc

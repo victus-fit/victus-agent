@@ -19,8 +19,7 @@ from demo.auth import (
     DemoTokenError,
     DemoTokenVerifier,
 )
-from demo.contracts import DemoChatRequest, DemoChatResponse
-from demo.fixture import load_david_fixture
+from demo.contracts import DEMO_PROFILE_VERSION, DemoChatRequest, DemoChatResponse
 from demo.policy import denied_demo_message, is_disallowed_demo_input
 from demo.runtime import DemoRuntimeConfigurationError, DemoSessionManager
 from adapters.http.auth import BackendIdentityResolver, IdentityResolver
@@ -91,7 +90,6 @@ def create_app(
     except DemoRuntimeConfigurationError:
         demo_sessions = None
         demo_configuration_error = True
-    demo_fixture = load_david_fixture()
     demo_auth_configuration_error = False
     try:
         verifier = demo_token_verifier or DemoTokenVerifier.from_environment()
@@ -296,7 +294,7 @@ def create_app(
         ):
             return JSONResponse({"error": "demo unavailable"}, status_code=503)
         try:
-            identity = verifier.verify(token, profile_version=demo_fixture.profile_version)
+            identity = verifier.verify(token, profile_version=DEMO_PROFILE_VERSION)
         except DemoTokenError as exc:
             return JSONResponse({"error": "demo authorization failed"}, status_code=exc.status_code)
         try:
@@ -338,7 +336,7 @@ def create_app(
                     if policy_denied:
                         response = DemoChatResponse(
                             message=denied_demo_message(payload.language),
-                            profile_version=demo_fixture.profile_version,
+                            profile_version=DEMO_PROFILE_VERSION,
                         )
                     else:
                         result = await demo_sessions.invoke(
@@ -346,12 +344,13 @@ def create_app(
                             graph_input={
                                 "request": {
                                     "request_id": payload.request_id,
-                                    "user_id": f"demo:david:{identity.session_id}",
+                                    "user_id": identity.subject,
                                     "raw_text": payload.message,
                                     "conversation_id": identity.session_id,
                                     "locale": payload.language,
                                     "execution_mode": "demo",
-                                    "demo_profile": demo_fixture.model_dump(mode="json"),
+                                    "demo_session_id": identity.session_id,
+                                    "demo_state": payload.demo_state,
                                 }
                             },
                         )
@@ -365,7 +364,7 @@ def create_app(
                             message = str(response_state.get("user_message") or "")
                         response = DemoChatResponse(
                             message=message or "No fue posible completar la demo.",
-                            profile_version=demo_fixture.profile_version,
+                            profile_version=DEMO_PROFILE_VERSION,
                         )
                 record_application_output(
                     span,

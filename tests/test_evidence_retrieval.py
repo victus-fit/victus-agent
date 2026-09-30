@@ -19,7 +19,7 @@ def test_gateway_calls_victus_rag_with_bearer_and_contract_payload() -> None:
         received["url"] = str(request.url)
         received["authorization"] = request.headers["Authorization"]
         received["body"] = json.loads(request.content)
-        return httpx.Response(200, json=_response())
+        return httpx.Response(200, json=_rag_response_with_extra_fields())
 
     gateway = VictusRAGEvidenceGateway(
         base_url="http://victus-rag:8080/",
@@ -36,6 +36,7 @@ def test_gateway_calls_victus_rag_with_bearer_and_contract_payload() -> None:
         "body": {"query": "creatine strength", "top_k": 2},
     }
     assert response.results[0].evidence.canonical_evidence_id == "evidence-1"
+    assert response.results[0].evidence.evidence_text == "Creatine improved strength."
 
 
 def test_gateway_maps_unavailable_response_without_exposing_token() -> None:
@@ -75,8 +76,8 @@ def test_tool_bounds_evidence_and_preserves_citation_fields() -> None:
     assert result.events_emitted == []
     assert result.warnings == ["retrieved_evidence_is_untrusted_content"]
     assert data["content_trust"] == "untrusted_retrieved_evidence"
-    assert data["results"][0]["canonical_evidence_id"] == "evidence-1"
-    assert data["results"][0]["paper_id"] == "paper-1"
+    assert data["results"][0]["paper_title"] == "Creatine and strength"
+    assert "canonical_evidence_id" not in data["results"][0]
     assert len(data["results"][0]["evidence_text"]) == 1_200
 
 
@@ -117,6 +118,7 @@ def test_langgraph_selects_evidence_retrieval_and_composes_from_its_result() -> 
     assert [tool["function"]["name"] for tool in client.requests[0].tools] == [
         "event_capture",
         "evidence_retrieval",
+        "profile",
     ]
 
 
@@ -153,9 +155,9 @@ def _response(evidence_text: str = "Creatine improved strength.") -> dict:
                 "evidence": {
                     "canonical_evidence_id": "evidence-1",
                     "paper_id": "paper-1",
+                    "paper_title": "Creatine and strength",
                     "evidence_text": evidence_text,
                     "source_block_ids": ["paper-1:block-1"],
-                    "organism": "human",
                 },
             }
         ],
@@ -165,3 +167,18 @@ def _response(evidence_text: str = "Creatine improved strength.") -> dict:
             "took_ms": 10,
         },
     }
+
+
+def _rag_response_with_extra_fields() -> dict:
+    payload = _response()
+    payload["results"][0]["evidence"].update(
+        {
+            "experiment_map_id": "map-1",
+            "experiment_scope_id": "scope-1",
+            "evidence_role_in_paper": "result",
+            "timepoint": "week 12",
+            "quantitative_data": {"effect": 0.2},
+            "observations": ["untrusted extra field"],
+        }
+    )
+    return payload

@@ -24,6 +24,24 @@ class RecordingDemoLLM:
         return self.responses.pop(0)
 
 
+class RecordingDemoMealGateway:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def capture(self, *, session_id, input_data):
+        self.calls.append({"session_id": session_id, "input": input_data})
+        return {"status": "success", "entries": [{"meal_log_entry_id": "demo-meal"}]}
+
+
+class RecordingProfileGateway:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def fetch(self, *, subject, section):
+        self.calls.append({"subject": subject, "section": section})
+        return {"display_name": "David", "biometrics": [{"metric_type": "weight"}]}
+
+
 def _verifier_and_signing_key() -> tuple[DemoTokenVerifier, object, str]:
     private_key = ec.generate_private_key(ec.SECP256R1())
     kid = "demo-es256-2026-01"
@@ -50,15 +68,20 @@ def _token(private_key: object, kid: str, **overrides: object) -> str:
     return jwt.encode(claims, private_key, algorithm="ES256", headers={"kid": kid})
 
 
-def _client(*responses: LLMResponse) -> tuple[TestClient, object, str, RecordingDemoLLM]:
+def _client(*responses: LLMResponse) -> tuple[TestClient, object, str, RecordingDemoLLM, RecordingDemoMealGateway, RecordingProfileGateway]:
     verifier, private_key, kid = _verifier_and_signing_key()
     llm = RecordingDemoLLM(*responses)
+    gateway = RecordingDemoMealGateway()
+    profile_gateway = RecordingProfileGateway()
     app = create_app(
         graph=object(),
-        demo_session_manager=DemoSessionManager(llm_client=llm, session_ttl_seconds=60),
+        demo_session_manager=DemoSessionManager(
+            llm_client=llm, session_ttl_seconds=60, demo_meal_capture_gateway=gateway,
+            profile_read_gateway=profile_gateway,
+        ),
         demo_token_verifier=verifier,
     )
-    return TestClient(app), private_key, kid, llm
+    return TestClient(app), private_key, kid, llm, gateway, profile_gateway
 
 
 def _request(client: TestClient, token: str, message: str = "Can David change lunch?"):
@@ -75,7 +98,7 @@ def _request(client: TestClient, token: str, message: str = "Can David change lu
 
 
 def test_demo_chat_uses_the_production_graph_with_normal_llm_tracing() -> None:
-    client, private_key, kid, llm = _client()
+    client, private_key, kid, llm, _, _ = _client()
     with client:
         response = _request(client, _token(private_key, kid), "Can David change lunch on training day?")
 
@@ -91,12 +114,30 @@ def test_demo_chat_uses_the_production_graph_with_normal_llm_tracing() -> None:
     assert [tool["function"]["name"] for tool in request.tools or []] == [
         "event_capture",
         "evidence_retrieval",
+        "profile",
     ]
-    assert "david-v1" in request.messages[0]["content"]
+    assert "demo_profile" not in request.messages[0]["content"]
+
+
+def test_demo_profile_tool_reads_persisted_david_context() -> None:
+    client, private_key, kid, llm, _, profile_gateway = _client(
+        LLMResponse(
+            text="",
+            tool_calls=[{"name": "profile", "arguments": {"section": "biometrics"}}],
+        ),
+        LLMResponse(text="David's latest weight is 82 kg."),
+    )
+    with client:
+        response = _request(client, _token(private_key, kid), "What is David's weight?")
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "David's latest weight is 82 kg."
+    assert profile_gateway.calls == [{"subject": "demo:david", "section": "biometrics"}]
+    assert llm.requests[1].tool_choice == "auto"
 
 
 def test_demo_event_capture_uses_an_ephemeral_store() -> None:
-    client, private_key, kid, llm = _client(
+    client, private_key, kid, llm, gateway, _ = _client(
         LLMResponse(
             text="",
             tool_calls=[
@@ -115,10 +156,35 @@ def test_demo_event_capture_uses_an_ephemeral_store() -> None:
     assert "demo session only" in response.json()["message"]
     assert len(llm.requests) == 2
     assert llm.requests[0].tools is not None
+    assert gateway.calls[0]["input"].items[0].name == "rice"
+
+
+def test_demo_forces_event_capture_for_explicitly_measured_consumption() -> None:
+    client, private_key, kid, llm, _, _ = _client(
+        LLMResponse(
+            text="",
+            tool_calls=[
+                {
+                    "name": "event_capture",
+                    "arguments": {"items": [{"name": "pollo", "quantity": 100, "unit": "g"}]},
+                }
+            ],
+        ),
+        LLMResponse(text="Registré el pollo sólo para esta sesión demo."),
+    )
+    with client:
+        response = _request(client, _token(private_key, kid), "Hoy comí 100 gramos de pollo")
+
+    assert response.status_code == 200
+    assert llm.requests[0].tool_choice == {
+        "type": "function",
+        "function": {"name": "event_capture"},
+    }
+    assert llm.requests[1].tool_choice == "auto"
 
 
 def test_demo_session_state_is_scoped_to_the_signed_session_id() -> None:
-    client, private_key, kid, llm = _client(
+    client, private_key, kid, llm, _, _ = _client(
         LLMResponse(text="First demo answer."),
         LLMResponse(text="Second demo answer."),
         LLMResponse(text="Separate demo answer."),
@@ -139,7 +205,7 @@ def test_demo_session_state_is_scoped_to_the_signed_session_id() -> None:
 
 
 def test_demo_rejects_prompt_injection_before_graph_execution() -> None:
-    client, private_key, kid, llm = _client()
+    client, private_key, kid, llm, _, _ = _client()
     with client:
         response = _request(
             client,
@@ -154,7 +220,7 @@ def test_demo_rejects_prompt_injection_before_graph_execution() -> None:
 
 
 def test_demo_rejects_invalid_audience_expiration_replay_and_missing_signed_session() -> None:
-    client, private_key, kid, _ = _client()
+    client, private_key, kid, _, _, _ = _client()
     with client:
         wrong_audience = _request(client, _token(private_key, kid, aud="another-service"))
         wrong_issuer = _request(client, _token(private_key, kid, iss="another-service"))
@@ -175,7 +241,7 @@ def test_demo_rejects_invalid_audience_expiration_replay_and_missing_signed_sess
 
 
 def test_demo_rejects_missing_scope_demo_claim_and_profile_version() -> None:
-    client, private_key, kid, _ = _client()
+    client, private_key, kid, _, _, _ = _client()
     with client:
         missing_scope = _request(client, _token(private_key, kid, scope=["demo:read"]))
         not_demo = _request(client, _token(private_key, kid, demo=False))

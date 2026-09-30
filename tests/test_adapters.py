@@ -44,10 +44,11 @@ def test_langgraph_executes_runtime_and_blocks_unsafe_turns() -> None:
         )
     )
     assert allowed["tool_context"]["last_tool_result"]["data"]["capture_action"] == "log_meal"
-    assert allowed["tool_context"]["allowed_tools"] == ["event_capture", "evidence_retrieval"]
+    assert allowed["tool_context"]["allowed_tools"] == ["event_capture", "evidence_retrieval", "profile"]
     assert [tool["function"]["name"] for tool in client.requests[0].tools or []] == [
         "event_capture",
         "evidence_retrieval",
+        "profile",
     ]
     assert allowed["audit"]["node_path"][-1] == "finalize_turn"
     assert "intent" not in allowed
@@ -321,6 +322,38 @@ def test_langgraph_clarification_survives_checkpoint_resume() -> None:
         and any(call.get("id") == "clarification_merge" for call in message.get("tool_calls", []))
     )
     assert tool_response["tool_call_id"] == assistant_call["tool_calls"][0]["id"]
+
+
+def test_langgraph_preserves_backend_candidate_question_without_missing_fields() -> None:
+    runtime = SequenceRuntime(
+        [
+            ToolResult(
+                status="needs_clarification",
+                clarification=ClarificationRequest(
+                    missing_fields=[],
+                    question="No puedo distinguir “pollo”. ¿Cuál fue: Pollo (Chicken) o Pollo asado (Roast chicken)?",
+                    expected_answer_type="free_text",
+                ),
+            )
+        ]
+    )
+    client = SequenceClient(
+        [LLMResponse(text="", tool_calls=[{"name": "event_capture", "arguments": {"items": [{"name": "pollo", "quantity": 100, "unit": "g"}]}}])]
+    )
+    paused = asyncio.run(
+        build_graph(llm_client=client, tool_runtime=runtime, checkpointer=InMemorySaver()).ainvoke(
+            {
+                "request": {
+                    "request_id": "candidate-1",
+                    "user_id": "u1",
+                    "conversation_id": "candidate",
+                    "raw_text": "Comí 100 g de pollo",
+                }
+            },
+            config={"configurable": {"thread_id": "candidate", "user_id": "u1"}},
+        )
+    )
+    assert paused["__interrupt__"][0].value["question"].startswith("No puedo distinguir “pollo”")
 
 
 def test_chat_api_authenticates_and_enforces_thread_ownership() -> None:
