@@ -14,8 +14,11 @@ Canonical registry: `src/tools/catalog.py`
   in grams (`g`) or milliliters (`ml`); occurrence time defaults to today. Path:
   `src/tools/event_capture/tool.py`
 - `evidence_retrieval` — Retrieves bounded, traceable scientific evidence from the private
-  `victus-rag` API for LangGraph synthesis. It is read-only and initially unavailable through MCP
-  and CLI. Path: `src/tools/evidence_retrieval/tool.py`
+  `victus-rag` API for LangGraph synthesis. It is read-only and available through LangGraph and
+  authenticated MCP. Path: `src/tools/evidence_retrieval/tool.py`
+- `profile` — Reads the authenticated user's current diet or biometrics through the WebApp-owned
+  profile boundary. It is read-only and available through LangGraph and authenticated MCP. Path:
+  `src/tools/profile/read_tool.py`
 
 ## Tool Result Contract
 

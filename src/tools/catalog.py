@@ -41,11 +41,12 @@ def _description(name: str) -> str:
         "profile": (
             "Use when the user asks about their current diet, latest logged meals, or basic "
             "biometrics such as weight, sleep, energy, or adherence. Choose the narrowest section "
-            "that answers the question. Do not use for changing profile data, logging a meal, "
+            "that answers the question. Use overview before starting a diet-plan intake so saved "
+            "preferences can be discussed. Do not use for changing profile data, logging a meal, "
             "or questions about another person."
         ),
         "profile_update": "Use when the user explicitly wants to add, modify, or remove a durable allergy, restriction, or preference.",
-        "diet_plan": "Use to create, refine, or activate a personalized diet plan after considering the user's profile and restrictions.",
+        "diet_plan": "Use to save a personalized diet draft, refinement, or activation only after the user has completed the diet-plan preference intake.",
     }[name]
 
 
@@ -88,7 +89,7 @@ _DEFINITIONS = (
         "retrieval",
         "low",
         False,
-        frozenset({"langgraph", "test"}),
+        frozenset({"langgraph", "mcp", "test"}),
     ),
     (
         "profile",
@@ -97,7 +98,7 @@ _DEFINITIONS = (
         "retrieval",
         "low",
         False,
-        frozenset({"langgraph", "test"}),
+        frozenset({"langgraph", "mcp", "test"}),
     ),
     ("profile_update", ProfileUpdateInput, execute_profile_update, "profile", "high", True, frozenset({"langgraph", "test"})),
     ("diet_plan", DietPlanInput, execute_diet_plan, "planning", "high", True, frozenset({"langgraph", "test"})),

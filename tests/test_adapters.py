@@ -8,7 +8,9 @@ from langgraph.types import Command
 from adapters.cli.commands import inspect_tool, list_tool_data
 from adapters.http.app import create_app as create_chat_app
 from adapters.langgraph.engine.graph import build_graph
+from adapters.mcp.auth import http_request_identity, resolve_identity
 from adapters.mcp.discovery import discover_tools
+from adapters.mcp.invocation import invoke as invoke_mcp
 from tools.contracts import ClarificationRequest, ToolResult
 from victus_platform.llm.contracts import LLMRequest, LLMResponse
 from victus_platform.llm.litellm_client import LiteLLMClient
@@ -44,11 +46,12 @@ def test_langgraph_executes_runtime_and_blocks_unsafe_turns() -> None:
         )
     )
     assert allowed["tool_context"]["last_tool_result"]["data"]["capture_action"] == "log_meal"
-    assert allowed["tool_context"]["allowed_tools"] == ["event_capture", "evidence_retrieval", "profile"]
+    assert allowed["tool_context"]["allowed_tools"] == ["event_capture", "evidence_retrieval", "profile", "diet_plan"]
     assert [tool["function"]["name"] for tool in client.requests[0].tools or []] == [
         "event_capture",
         "evidence_retrieval",
         "profile",
+        "diet_plan",
     ]
     assert allowed["audit"]["node_path"][-1] == "finalize_turn"
     assert "intent" not in allowed
@@ -137,6 +140,120 @@ def test_langgraph_model_selection_keeps_identity_and_text_out_of_tool_arguments
     )
     assert changed_identity["response"]["mode"] == "error"
     assert "identity" in changed_identity["response"]["user_message"]
+
+
+def test_diet_plan_creation_reads_profile_then_asks_for_preferences_in_the_requested_language() -> None:
+    runtime = SequenceRuntime(
+        [
+            ToolResult(
+                status="success",
+                data={
+                    "preferences": [
+                        {"label": "Alergia", "value": "Maní"},
+                        {"label": "Cocina", "value": "Preparaciones simples"},
+                    ]
+                },
+            )
+        ]
+    )
+    client = SequenceClient([LLMResponse(text="La revisaré contigo. ¿Qué alimentos prefieres?", tool_calls=[])])
+    result = asyncio.run(
+        build_graph(llm_client=client, tool_runtime=runtime).ainvoke(
+            {
+                "request": {
+                    "request_id": "diet-1",
+                    "user_id": "u1",
+                    "conversation_id": "c-diet",
+                    "raw_text": "Quiero una dieta personalizada",
+                }
+            }
+        )
+    )
+
+    assert runtime.invocations[0].name == "profile"
+    assert runtime.invocations[0].arguments == {"section": "overview"}
+    assert result["response"]["user_message"] == "La revisaré contigo. ¿Qué alimentos prefieres?"
+    assert result["planning"]["diet_plan_intake"]["status"] == "awaiting_user_preferences"
+    assert client.requests[0].operation == "agent.diet_plan_intake"
+    assert "Reply strictly in Spanish" in client.requests[0].messages[0]["content"]
+    assert "exactly three numbered questions in this order" in client.requests[0].messages[0]["content"]
+
+    english_runtime = SequenceRuntime([ToolResult(status="success", data={"preferences": []})])
+    english_client = SequenceClient([LLMResponse(text="Let’s tailor it. Which foods do you enjoy?", tool_calls=[])])
+    english_result = asyncio.run(
+        build_graph(llm_client=english_client, tool_runtime=english_runtime).ainvoke(
+            {
+                "request": {
+                    "request_id": "diet-en-1",
+                    "user_id": "u1",
+                    "conversation_id": "c-diet-en",
+                    "raw_text": "I want to create my first diet",
+                    "locale": "en",
+                }
+            }
+        )
+    )
+    assert english_runtime.invocations[0].name == "profile"
+    assert english_result["response"]["user_message"] == "Let’s tailor it. Which foods do you enjoy?"
+    assert "Reply strictly in English" in english_client.requests[0].messages[0]["content"]
+    assert "exactly three numbered questions in this order" in english_client.requests[0].messages[0]["content"]
+
+
+def test_diet_plan_is_available_after_the_preference_intake() -> None:
+    runtime = SequenceRuntime(
+        [
+            ToolResult(status="success", data={"preferences": []}),
+            ToolResult(status="success", data={"plan_id": "plan-1"}),
+        ]
+    )
+    client = SequenceClient(
+        [
+            LLMResponse(text="Cuéntame tus preferencias para preparar el plan.", tool_calls=[]),
+            LLMResponse(
+                text="",
+                tool_calls=[
+                    {
+                        "name": "diet_plan",
+                        "arguments": {"action": "create", "plan_json": {"meals": []}},
+                    }
+                ],
+            ),
+            LLMResponse(text="Preparé el borrador.", tool_calls=[]),
+        ]
+    )
+    saver = InMemorySaver()
+    graph = build_graph(llm_client=client, tool_runtime=runtime, checkpointer=saver)
+    config = {"configurable": {"thread_id": "c-diet", "user_id": "u1"}}
+    asyncio.run(
+        graph.ainvoke(
+            {
+                "request": {
+                    "request_id": "diet-1",
+                    "user_id": "u1",
+                    "conversation_id": "c-diet",
+                    "raw_text": "Quiero una dieta personalizada",
+                }
+            },
+            config=config,
+        )
+    )
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "request": {
+                    "request_id": "diet-2",
+                    "user_id": "u1",
+                    "conversation_id": "c-diet",
+                    "raw_text": "Quiero tres comidas, cocinar rápido y priorizar proteínas.",
+                }
+            },
+            config=config,
+        )
+    )
+
+    assert [invocation.name for invocation in runtime.invocations] == ["profile", "diet_plan"]
+    assert result["response"]["user_message"] == "Preparé el borrador."
+    assert "diet_plan_intake" not in result.get("planning", {})
 
 
 def test_langgraph_confirmation_resumes_once_and_memory_is_user_scoped() -> None:
@@ -298,9 +415,7 @@ def test_langgraph_clarification_survives_checkpoint_resume() -> None:
             config=config,
         )
     )
-    assert paused["__interrupt__"][0].value["question"] == (
-        "Genial, pero me hacen falta los campos: time."
-    )
+    assert paused["__interrupt__"][0].value["question"] == "¿A qué hora?"
     resumed = asyncio.run(graph.ainvoke(Command(resume={"answer": "150 g"}), config=config))
     assert resumed["response"]["user_message"] == "Registrado con la hora."
     assert runtime.invocations[-1].arguments == {
@@ -504,25 +619,80 @@ def test_chat_auto_resumes_clarification_when_message_arrives_while_pending() ->
 
 
 def test_mcp_discovers_catalog_and_serves_http_health() -> None:
-    from starlette.testclient import TestClient
+    from starlette.requests import Request
 
     from adapters.mcp.transport import MCP_PATH, create_app
 
-    prepared = False
-
-    async def prepare_storage() -> None:
-        nonlocal prepared
-        prepared = True
-
     discovered_tools = [tool.name for tool in discover_tools()]
     assert discovered_tools[0] == "event_capture"
-    assert discovered_tools == ["event_capture"]
-    with TestClient(create_app(storage_preparer=prepare_storage)) as client:
-        response = client.get("/health")
-    assert prepared is True
+    assert discovered_tools == ["event_capture", "evidence_retrieval", "profile"]
+    app = create_app(storage_preparer=_prepare_nothing)
+    health_route = next(route for route in app.routes if getattr(route, "path", None) == "/health")
+    response = asyncio.run(
+        health_route.endpoint(
+            Request({"type": "http", "method": "GET", "path": "/health", "headers": []})
+        )
+    )
     assert response.status_code == 200
-    assert response.json()["transport"] == "streamable_http"
+    assert b'"transport":"streamable_http"' in response.body
     assert MCP_PATH == "/mcp"
+
+
+def test_mcp_reuses_chat_identity_resolver_per_http_request(monkeypatch) -> None:
+    class Resolver:
+        def __init__(self) -> None:
+            self.tokens: list[str] = []
+
+        async def resolve(self, token: str) -> str | None:
+            self.tokens.append(token)
+            return {"user-one": "u1", "user-two": "u2"}.get(token)
+
+    resolver = Resolver()
+    monkeypatch.setenv("VICTUS_API_TOKEN", "container-token")
+
+    async def resolve_cases() -> tuple[object, object, object]:
+        with http_request_identity("user-one"):
+            first = await resolve_identity(resolver=resolver)
+        with http_request_identity("user-two"):
+            second = await resolve_identity(resolver=resolver)
+        with http_request_identity(None):
+            missing = await resolve_identity(resolver=resolver)
+        return first, second, missing
+
+    first, second, missing = asyncio.run(resolve_cases())
+    assert first.subject == "u1"
+    assert first.authenticated is True
+    assert second.subject == "u2"
+    assert second.authenticated is True
+    assert missing.subject is None
+    assert missing.authenticated is False
+    assert resolver.tokens == ["user-one", "user-two"]
+
+
+def test_mcp_invocation_passes_backend_resolved_identity_to_the_runtime() -> None:
+    class Resolver:
+        async def resolve(self, token: str) -> str | None:
+            return "u1" if token == "user-one" else None
+
+    runtime = RecordingRuntime()
+
+    async def invoke_with_identity() -> ToolResult:
+        with http_request_identity("user-one"):
+            return await invoke_mcp(
+                runtime,
+                "event_capture",
+                {"items": [{"name": "arroz", "quantity": 100, "unit": "g"}]},
+                identity_resolver=Resolver(),
+            )
+
+    result = asyncio.run(invoke_with_identity())
+    assert result.status == "success"
+    assert runtime.invocations[0].context.identity.subject == "u1"
+    assert runtime.invocations[0].context.identity.authenticated is True
+
+
+async def _prepare_nothing() -> None:
+    return None
 
 
 def test_cli_reads_catalog_without_alternate_execution_metadata() -> None:

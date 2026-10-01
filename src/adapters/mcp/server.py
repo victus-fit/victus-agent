@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from adapters.http.auth import IdentityResolver
 from adapters.mcp.discovery import discover_tools
 from adapters.mcp.invocation import invoke
 from adapters.mcp.mapping import to_mcp_content
 from bootstrap.runtime import build_runtime
 
 
-def build_server(runtime=None):
+def build_server(runtime=None, *, identity_resolver: IdentityResolver | None = None):
     import mcp.types as types
     from mcp.server.lowlevel import Server
 
@@ -22,7 +23,9 @@ def build_server(runtime=None):
 
     @server.call_tool()
     async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[types.ContentBlock]:
-        return to_mcp_content(await invoke(runtime, name, arguments))
+        return to_mcp_content(
+            await invoke(runtime, name, arguments, identity_resolver=identity_resolver)
+        )
 
     return server
 

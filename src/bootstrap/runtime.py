@@ -7,6 +7,7 @@ from typing import Iterator
 from tools.runtime import ToolRuntime
 from tools.contracts import ToolResult, ToolSafety, ToolServices
 from tools.evidence_retrieval.remote import VictusRAGEvidenceGateway
+from tools.event_capture.remote import WebAppMealCaptureGateway
 from tools.profile.read_remote import WebAppProfileGateway
 from tools.profile.write_remote import WebAppProfileWriteGateway
 from victus_platform.identity.profile_gateway import BackendProfileGateway
@@ -47,24 +48,27 @@ def projection_repository_scope() -> Iterator[object | None]:
 
 
 def build_runtime() -> ToolRuntime:
-    return ToolRuntime(
-        event_store_scope=event_store_scope,
-        services=ToolServices(
-            {
+    webapp_base_url = os.getenv("VICTUS_DEMO_STATE_API_URL", "")
+    webapp_api_token = os.getenv("VICTUS_DEMO_STATE_API_TOKEN", "")
+    services = {
                 "profile_gateway": BackendProfileGateway(),
                 "profile_read_gateway": WebAppProfileGateway(
-                    base_url=os.getenv("VICTUS_DEMO_STATE_API_URL", ""),
-                    api_token=os.getenv("VICTUS_DEMO_STATE_API_TOKEN", ""),
+                    base_url=webapp_base_url,
+                    api_token=webapp_api_token,
                 ),
-                "profile_write_gateway": WebAppProfileWriteGateway(base_url=os.getenv("VICTUS_DEMO_STATE_API_URL", ""), api_token=os.getenv("VICTUS_DEMO_STATE_API_TOKEN", "")),
-                "diet_plan_gateway": WebAppProfileWriteGateway(base_url=os.getenv("VICTUS_DEMO_STATE_API_URL", ""), api_token=os.getenv("VICTUS_DEMO_STATE_API_TOKEN", "")),
+                "profile_write_gateway": WebAppProfileWriteGateway(base_url=webapp_base_url, api_token=webapp_api_token),
+                "diet_plan_gateway": WebAppProfileWriteGateway(base_url=webapp_base_url, api_token=webapp_api_token),
                 "evidence_retrieval_gateway": VictusRAGEvidenceGateway(
                     base_url=os.getenv("VICTUS_RAG_API_URL", ""),
                     api_token=os.getenv("VICTUS_RAG_API_TOKEN", ""),
                     timeout_seconds=float(os.getenv("VICTUS_RAG_API_TIMEOUT_SECONDS", "10")),
                 ),
             }
-        ),
+    if webapp_base_url and webapp_api_token:
+        services["meal_capture_gateway"] = WebAppMealCaptureGateway(base_url=webapp_base_url, api_token=webapp_api_token)
+    return ToolRuntime(
+        event_store_scope=event_store_scope,
+        services=ToolServices(services),
         trace_id_factory=new_trace_id,
         precheck=safety_precheck,
     )

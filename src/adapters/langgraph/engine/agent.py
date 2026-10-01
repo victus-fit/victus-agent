@@ -25,6 +25,17 @@ _EXPLICIT_METRIC_QUANTITY = re.compile(
     r"\b\d+(?:[.,]\d+)?\s*(?:g|gr|gramo(?:s)?|ml|mililitro(?:s)?)\b",
     re.IGNORECASE,
 )
+_DIET_PLAN_CREATION_REQUEST = re.compile(
+    r"\b(?:crear|creame|créame|generar|generame|genérame|armar|armame|ármame|preparar|hacer|hazme|házme|dame)\b"
+    r".{0,80}\b(?:dieta|plan(?:\s+alimentario)?)\b|"
+    r"\b(?:quiero|necesito|quisiera|gustar[ií]a|me\s+gustar[ií]a)\b"
+    r".{0,80}\b(?:dieta|plan(?:\s+alimentario)?)\b|"
+    r"\b(?:dieta|plan\s+alimentario)\b.{0,50}\b(?:crear|generar|armar|personalizad)\b|"
+    r"\b(?:create|make|generate|build|design|prepare)\b.{0,80}\b(?:diet|meal\s+plan|nutrition\s+plan)\b|"
+    r"\b(?:i\s+(?:want|need|would\s+like)|help\s+me)\b.{0,80}\b(?:diet|meal\s+plan|nutrition\s+plan)\b|"
+    r"\b(?:diet|meal\s+plan|nutrition\s+plan)\b.{0,50}\b(?:create|make|generate|build|design|personaliz)",
+    re.IGNORECASE,
+)
 # Agent-owned graph nodes and routes:
 #
 # - ingest_turn: validates authenticated request/thread context, initializes turn state,
@@ -96,6 +107,73 @@ def agent_decision(*, llm_client: LLMClient | None, model: str, redact_content: 
 
         allowed = list(tool_context.get("allowed_tools", []))
         request = state.get("request", {})
+        if _should_start_diet_plan_intake(state, tool_context, allowed):
+            proposal = ProposedAction(
+                tool_name="profile",
+                arguments={"section": "overview"},
+                call_id="diet_plan_profile_intake",
+                requires_confirmation=False,
+            )
+            return _merge(
+                state,
+                messages=[
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": proposal.call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": proposal.tool_name,
+                                    "arguments": json.dumps(proposal.arguments),
+                                },
+                            }
+                        ],
+                    }
+                ],
+                tool_context={
+                    **tool_context,
+                    "proposed_action": proposal.model_dump(mode="json"),
+                    "loop_count": loop_count + 1,
+                },
+                node_name="agent_decision",
+            )
+        if _should_ask_diet_plan_intake_question(state, tool_context):
+            planning = dict(state.get("planning", {}))
+            planning["diet_plan_intake"] = {"status": "awaiting_user_preferences"}
+            if llm_client is None:
+                return _merge(
+                    state,
+                    response={"mode": "final", "user_message": "Entendido."},
+                    planning=planning,
+                    node_name="agent_decision",
+                )
+            response = await llm_client.acomplete(
+                LLMRequest(
+                    operation="agent.diet_plan_intake",
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": _diet_plan_intake_prompt(state)},
+                        *[_message_dict(item) for item in state.get("messages", [])[-12:]],
+                    ],
+                    temperature=0,
+                    max_tokens=500,
+                    redact_content=redact_content,
+                    metadata={
+                        "conversation_id": request.get("conversation_id"),
+                        "request_id": request.get("request_id"),
+                    },
+                )
+            )
+            question = response.text.strip() or "Entendido."
+            return _merge(
+                state,
+                messages=[{"role": "assistant", "content": question}],
+                response={"mode": "final", "user_message": question},
+                planning=planning,
+                node_name="agent_decision",
+            )
         if tool_context.get("last_tool_result") and llm_client is None:
             result = tool_context["last_tool_result"]
             events = result.get("events_emitted", [])
@@ -282,6 +360,9 @@ def execute_tool(runtime: ToolRuntime):
                 "arguments": dict(proposal.get("arguments") or {}),
                 "missing_fields": (dumped.get("clarification") or {}).get("missing_fields", []),
             }
+        planning = dict(state.get("planning", {}))
+        if proposal.get("tool_name") == "diet_plan" and dumped.get("status") == "success":
+            planning.pop("diet_plan_intake", None)
         return _merge(
             state,
             tool_context={
@@ -294,6 +375,7 @@ def execute_tool(runtime: ToolRuntime):
                     else {}
                 ),
             },
+            planning=planning,
             messages=[
                 {
                     "role": "tool",
@@ -403,14 +485,13 @@ def clarification_interrupt(
 
 
 def _prefabricated_clarification_question(clarification: dict[str, Any]) -> str:
-    missing_fields = clarification.get("missing_fields", [])
-    if isinstance(missing_fields, list) and missing_fields:
-        fields = ", ".join(str(field) for field in missing_fields)
-        return f"Genial, pero me hacen falta los campos: {fields}."
     question = clarification.get("question")
     if isinstance(question, str) and question.strip():
         return question.strip()
-    return "Genial, pero me hacen falta algunos campos."
+    missing_fields = clarification.get("missing_fields", [])
+    if isinstance(missing_fields, list) and missing_fields:
+        return "¿Qué cantidad consumiste? Indícala en gramos o mililitros."
+    return "¿Qué cantidad consumiste? Indícala en gramos o mililitros."
 
 
 async def _merge_clarification_answer(
@@ -557,6 +638,7 @@ def _decision_prompt(state: VictusGraphState) -> str:
         "memories": state.get("memory", {}).get("recalled", []),
         "compact_summary": state.get("memory", {}).get("compact_summary", ""),
         "previous_tool_result": state.get("tool_context", {}).get("last_tool_result"),
+        "diet_plan_intake": state.get("planning", {}).get("diet_plan_intake"),
     }
     demo_state = request.get("demo_state")
     demo_policy = ""
@@ -583,6 +665,11 @@ def _decision_prompt(state: VictusGraphState) -> str:
         "quantity y unit para activar aclaración. No inventes 1 g, 1 ml ni una unidad por defecto. "
         "Usa profile para preguntas sobre la dieta actual o biometrías básicas del usuario; no "
         "supongas esos datos sin consultarla. "
+        "Para crear una dieta, primero debes completar la entrevista de preferencias: tras la "
+        "pregunta guiada, usa la respuesta más reciente del usuario junto al perfil ya leído para "
+        "proponer y guardar el plan activo con diet_plan action=create. Nunca uses diet_plan antes "
+        "de esa entrevista. Tras guardarlo, explica que ya está activo y ofrece solo dos opciones: "
+        "mantenerlo tal cual o pedir un ajuste. "
         f"{demo_policy} Contexto acotado: {json.dumps(context, ensure_ascii=False, default=str)}"
     )
 
@@ -601,6 +688,49 @@ def _tool_choice(state: VictusGraphState, allowed_tools: list[str]) -> str | dic
     return "auto"
 
 
+def _is_diet_plan_creation_request(state: VictusGraphState) -> bool:
+    request = state.get("request", {})
+    text = str(request.get("working_text") or request.get("original_text") or "")
+    return bool(_DIET_PLAN_CREATION_REQUEST.search(text))
+
+
+def _should_start_diet_plan_intake(
+    state: VictusGraphState, tool_context: dict[str, Any], allowed_tools: list[str]
+) -> bool:
+    if "profile" not in allowed_tools or tool_context.get("last_tool_result"):
+        return False
+    if state.get("planning", {}).get("diet_plan_intake", {}).get("status") == "awaiting_user_preferences":
+        return False
+    return _is_diet_plan_creation_request(state)
+
+
+def _should_ask_diet_plan_intake_question(
+    state: VictusGraphState, tool_context: dict[str, Any]
+) -> bool:
+    result = tool_context.get("last_tool_result", {})
+    if result.get("tool_name") != "profile" or result.get("status") != "success":
+        return False
+    return _is_diet_plan_creation_request(state)
+
+
+def _diet_plan_intake_prompt(state: VictusGraphState) -> str:
+    request = state.get("request", {})
+    locale = str(request.get("locale") or "es").lower()
+    language = "Spanish" if locale.startswith("es") else "English"
+    profile = state.get("tool_context", {}).get("last_tool_result", {}).get("data", {})
+    return (
+        "You are Victus, a nutrition assistant. Conduct the first, conversational step of a diet-plan "
+        "interview. Reply strictly in " + language + ". Use the retrieved profile below only when it adds "
+        "useful context. Keep the same interview shape in every locale: one concise welcome, one concise "
+        "sentence explaining that three details are needed, then exactly three numbered questions in this order: "
+        "dietary restrictions or preferred foods; meals per day; cooking time. Do not ask any other questions, "
+        "create, activate, or promise a diet in this response. Do not mention tools, internal identifiers, or raw "
+        "enum values; translate profile concepts into natural user-facing language. Tailor the wording to the "
+        "person, but do not use a fixed script. Retrieved profile: "
+        + json.dumps(profile, ensure_ascii=False, default=str)
+    )
+
+
 def _is_explicit_demo_meal_capture(text: str) -> bool:
     return bool(_DEMO_CONSUMPTION_VERB.search(text) and _EXPLICIT_METRIC_QUANTITY.search(text))
 
@@ -610,7 +740,7 @@ def _requires_confirmation(name: str, arguments: dict[str, Any]) -> bool:
         text = str(arguments.get("normalized_text") or "").lower()
         return any(term in text for term in ("alerg", "intoleran", "elimina", "borra", "quita", "remove", "delete"))
     if name == "diet_plan":
-        return arguments.get("action") == "activate"
+        return False
     if name == "planning":
         return arguments.get("action") in {"adjust_goal", "save_artifact", "end_session"}
     text = str(arguments.get("normalized_text") or "").lower()

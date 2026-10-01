@@ -28,6 +28,11 @@ def execute(
     user_id = context.identity.subject
     if not user_id:
         raise ValueError("event_capture requires an authenticated user")
+    production_gateway = services.get("meal_capture_gateway")
+    if production_gateway is not None:
+        if status == "needs_clarification":
+            return ToolExecution(result=ToolResult(status=status, data=_result_data(decision), clarification=_clarification_request(decision)))
+        return _execute_production(input_data, context, decision, production_gateway)
     gateway = services.get("demo_meal_capture_gateway")
     if gateway is not None:
         if status == "needs_clarification":
@@ -52,6 +57,14 @@ def execute(
         ),
         events=(event,) if event is not None and status == "success" else (),
     )
+
+
+async def _execute_production(input_data, context, decision, gateway) -> ToolExecution:
+    captured = await gateway.capture(subject=context.identity.subject, input_data=input_data)
+    if captured.get("status") == "needs_clarification":
+        clarification = _clarification_request(decision).model_copy(update={"question": str(captured.get("question") or "Necesito el nombre exacto del alimento.")})
+        return ToolExecution(result=ToolResult(status="needs_clarification", data=_result_data(decision), clarification=clarification))
+    return ToolExecution(result=ToolResult(status="success", data=_result_data(decision)))
 
 
 async def _execute_demo(input_data, context, decision, gateway) -> ToolExecution:

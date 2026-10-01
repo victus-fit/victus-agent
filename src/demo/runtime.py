@@ -20,7 +20,7 @@ from tools.runtime import ToolRuntime
 from victus_platform.llm.contracts import LLMClient
 from victus_platform.telemetry import new_trace_id
 
-DEMO_ENABLED_TOOLS = AGENT_ENABLED_TOOLS
+DEMO_ENABLED_TOOLS = AGENT_ENABLED_TOOLS - frozenset({"diet_plan"})
 DEFAULT_SESSION_TTL_SECONDS = 15 * 60
 MAX_SESSION_TTL_SECONDS = 60 * 60
 

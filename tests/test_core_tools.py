@@ -26,7 +26,7 @@ from victus_platform.telemetry.phoenix import (
 def test_catalog_and_capabilities_share_one_runtime() -> None:
     definitions = list_tools(exposure="mcp")
     names = [definition.name for definition in definitions]
-    assert names == ["event_capture"]
+    assert names == ["event_capture", "evidence_retrieval", "profile"]
     assert all(get_tool(name).input_schema for name in names)
     assert all("Use " in definition.description for definition in definitions)
     assert all("Do not use" in definition.description for definition in definitions)

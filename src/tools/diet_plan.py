@@ -4,7 +4,7 @@ from pydantic import Field
 from tools.contracts import ContractModel, ToolContext, ToolExecution, ToolResult, ToolServices
 
 class DietPlanInput(ContractModel):
-    action: Literal["create_draft", "refine", "activate"]
+    action: Literal["create", "refine", "activate"]
     plan_id: str | None = None
     plan_json: dict[str, Any] | None = Field(default=None, description="Structured diet proposal with goals, meals, foods, portions, and alternatives.")
 
