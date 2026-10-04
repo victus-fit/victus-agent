@@ -12,11 +12,17 @@ from adapters.langgraph.engine.state import GRAPH_VERSION, VictusGraphState
 from adapters.langgraph.runtime.context import _merge
 from tools.catalog import get_tool, list_tools
 from tools.contracts import ToolContext, ToolIdentity, ToolInvocation
+from tools.diet_plan import DietPlanDocument
 from tools.runtime import ToolRuntime
 from victus_platform.llm.contracts import LLMClient, LLMRequest
 from victus_platform.telemetry.phoenix import set_current_span_attributes
 
 MAX_TOOL_LOOPS = 4
+DIET_INTAKE_STEPS = ("preferences", "meals_per_day")
+DIET_INTAKE_QUESTIONS = {
+    "preferences": "Para empezar, ¿qué alimentos prefieres incluir o evitar? Indica también restricciones o alergias.",
+    "meals_per_day": "Perfecto. ¿Cuántas comidas al día quieres realizar?",
+}
 _DEMO_CONSUMPTION_VERB = re.compile(
     r"\b(?:com[ií]|consum[ií]|beb[ií]|tom[eé]|ate|consumed|drank|had)\b",
     re.IGNORECASE,
@@ -107,6 +113,69 @@ def agent_decision(*, llm_client: LLMClient | None, model: str, redact_content: 
 
         allowed = list(tool_context.get("allowed_tools", []))
         request = state.get("request", {})
+        planning = dict(state.get("planning", {}))
+        intake = planning.get("diet_plan_intake")
+        if isinstance(intake, dict) and intake.get("status") == "collecting":
+            next_intake, question = advance_diet_plan_intake(intake, str(request.get("original_text") or ""))
+            planning["diet_plan_intake"] = next_intake
+            if question:
+                return _merge(
+                    state,
+                    planning=planning,
+                    response={"mode": "final", "user_message": question},
+                    node_name="agent_decision",
+                )
+            state = _merge(state, planning=planning, node_name="agent_decision")
+            tool_context = dict(state.get("tool_context", {}))
+            intake = next_intake
+        elif (
+            isinstance(intake, dict)
+            and intake.get("status") == "awaiting_confirmation"
+            and not tool_context.get("last_tool_result")
+        ):
+            user_text = str(request.get("original_text") or "")
+            if _is_diet_plan_acceptance(user_text):
+                return _diet_plan_proposal(
+                    state,
+                    tool_context,
+                    action="activate",
+                    plan_id=str(intake.get("draft_plan_id") or ""),
+                )
+            planning["diet_plan_intake"] = {
+                **intake,
+                "status": "refining",
+                "edit_request": user_text,
+            }
+            state = _merge(state, planning=planning, node_name="agent_decision")
+            tool_context = dict(state.get("tool_context", {}))
+            intake = planning["diet_plan_intake"]
+        last_result = tool_context.get("last_tool_result")
+        proposal = tool_context.get("proposed_action", {})
+        if (
+            isinstance(last_result, dict)
+            and last_result.get("status") == "success"
+            and proposal.get("tool_name") == "diet_plan"
+        ):
+            return _diet_plan_success_response(state, tool_context)
+        if isinstance(intake, dict) and intake.get("status") in {"ready", "refining"}:
+            if llm_client is None:
+                return _error_response(state, "diet-plan generation requires an LLM client", "diet_plan_unavailable")
+            plan = await _generate_diet_plan_document(
+                llm_client=llm_client,
+                model=model,
+                intake=intake,
+                request=request,
+                redact_content=redact_content,
+            )
+            if plan is None:
+                return _error_response(state, "No fue posible generar un borrador de dieta completo.", "diet_plan_invalid_draft")
+            return _diet_plan_proposal(
+                state,
+                tool_context,
+                action="refine" if intake.get("status") == "refining" else "create",
+                plan_id=str(intake.get("draft_plan_id") or ""),
+                plan_json=plan,
+            )
         if _should_start_diet_plan_intake(state, tool_context, allowed):
             proposal = ProposedAction(
                 tool_name="profile",
@@ -141,36 +210,15 @@ def agent_decision(*, llm_client: LLMClient | None, model: str, redact_content: 
             )
         if _should_ask_diet_plan_intake_question(state, tool_context):
             planning = dict(state.get("planning", {}))
-            planning["diet_plan_intake"] = {"status": "awaiting_user_preferences"}
-            if llm_client is None:
-                return _merge(
-                    state,
-                    response={"mode": "final", "user_message": "Entendido."},
-                    planning=planning,
-                    node_name="agent_decision",
-                )
-            response = await llm_client.acomplete(
-                LLMRequest(
-                    operation="agent.diet_plan_intake",
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": _diet_plan_intake_prompt(state)},
-                        *[_message_dict(item) for item in state.get("messages", [])[-12:]],
-                    ],
-                    temperature=0,
-                    max_tokens=500,
-                    redact_content=redact_content,
-                    metadata={
-                        "conversation_id": request.get("conversation_id"),
-                        "request_id": request.get("request_id"),
-                    },
-                )
-            )
-            question = response.text.strip() or "Entendido."
+            planning["diet_plan_intake"] = {
+                "status": "collecting",
+                "step": "preferences",
+                "answers": {},
+                "profile": tool_context.get("last_tool_result", {}).get("data", {}),
+            }
             return _merge(
                 state,
-                messages=[{"role": "assistant", "content": question}],
-                response={"mode": "final", "user_message": question},
+                response={"mode": "final", "user_message": DIET_INTAKE_QUESTIONS["preferences"]},
                 planning=planning,
                 node_name="agent_decision",
             )
@@ -361,8 +409,6 @@ def execute_tool(runtime: ToolRuntime):
                 "missing_fields": (dumped.get("clarification") or {}).get("missing_fields", []),
             }
         planning = dict(state.get("planning", {}))
-        if proposal.get("tool_name") == "diet_plan" and dumped.get("status") == "success":
-            planning.pop("diet_plan_intake", None)
         return _merge(
             state,
             tool_context={
@@ -667,9 +713,8 @@ def _decision_prompt(state: VictusGraphState) -> str:
         "supongas esos datos sin consultarla. "
         "Para crear una dieta, primero debes completar la entrevista de preferencias: tras la "
         "pregunta guiada, usa la respuesta más reciente del usuario junto al perfil ya leído para "
-        "proponer y guardar el plan activo con diet_plan action=create. Nunca uses diet_plan antes "
-        "de esa entrevista. Tras guardarlo, explica que ya está activo y ofrece solo dos opciones: "
-        "mantenerlo tal cual o pedir un ajuste. "
+        "proponer un borrador con diet_plan action=create. Nunca uses diet_plan antes de esa "
+        "entrevista ni actives una dieta sin aceptación explícita. "
         f"{demo_policy} Contexto acotado: {json.dumps(context, ensure_ascii=False, default=str)}"
     )
 
@@ -699,7 +744,7 @@ def _should_start_diet_plan_intake(
 ) -> bool:
     if "profile" not in allowed_tools or tool_context.get("last_tool_result"):
         return False
-    if state.get("planning", {}).get("diet_plan_intake", {}).get("status") == "awaiting_user_preferences":
+    if state.get("planning", {}).get("diet_plan_intake", {}).get("status") in {"collecting", "ready", "refining", "awaiting_confirmation"}:
         return False
     return _is_diet_plan_creation_request(state)
 
@@ -711,6 +756,137 @@ def _should_ask_diet_plan_intake_question(
     if result.get("tool_name") != "profile" or result.get("status") != "success":
         return False
     return _is_diet_plan_creation_request(state)
+
+
+def advance_diet_plan_intake(
+    intake: dict[str, Any], answer: str,
+) -> tuple[dict[str, Any], str | None]:
+    step = str(intake.get("step") or "preferences")
+    answers = dict(intake.get("answers") or {})
+    answers[step] = answer.strip()
+    try:
+        next_step = DIET_INTAKE_STEPS[DIET_INTAKE_STEPS.index(step) + 1]
+    except IndexError:
+        return {"status": "ready", "answers": answers}, None
+    return {"status": "collecting", "step": next_step, "answers": answers}, DIET_INTAKE_QUESTIONS[next_step]
+
+
+def _is_diet_plan_acceptance(text: str) -> bool:
+    return bool(re.search(r"\b(?:acepto|aceptar|confirmo|confirmar|sí|si|activar|actívalo|activalo)\b", text, re.IGNORECASE))
+
+
+def _diet_plan_proposal(
+    state: VictusGraphState,
+    tool_context: dict[str, Any],
+    *,
+    action: str,
+    plan_id: str,
+    plan_json: dict[str, Any] | None = None,
+) -> VictusGraphState:
+    arguments: dict[str, Any] = {"action": action}
+    if plan_id:
+        arguments["plan_id"] = plan_id
+    if plan_json is not None:
+        arguments["plan_json"] = plan_json
+    proposal = ProposedAction(
+        tool_name="diet_plan",
+        arguments=arguments,
+        call_id=f"diet_plan_{action}",
+        requires_confirmation=False,
+    )
+    return _merge(
+        state,
+        messages=[{"role": "assistant", "content": "", "tool_calls": [{"id": proposal.call_id, "type": "function", "function": {"name": "diet_plan", "arguments": json.dumps(proposal.arguments)}}]}],
+        tool_context={**tool_context, "proposed_action": proposal.model_dump(mode="json"), "loop_count": int(tool_context.get("loop_count", 0)) + 1},
+        node_name="agent_decision",
+    )
+
+
+async def _generate_diet_plan_document(
+    *,
+    llm_client: LLMClient,
+    model: str,
+    intake: dict[str, Any],
+    request: dict[str, Any],
+    redact_content: bool,
+) -> dict[str, Any] | None:
+    schema = DietPlanDocument.model_json_schema()
+    response = await llm_client.acomplete(
+        LLMRequest(
+            operation="agent.diet_plan_draft",
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Genera un borrador nutricional semanal seguro y práctico. Devuelve únicamente un objeto JSON que cumpla este esquema; no incluyas markdown ni texto adicional. Respeta restricciones y preferencias.",
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "profile": intake.get("profile", {}),
+                            "intake_answers": intake.get("answers", {}),
+                            "draft_to_refine": intake.get("draft_plan"),
+                            "requested_edit": intake.get("edit_request"),
+                            "schema": schema,
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                },
+            ],
+            temperature=0,
+            max_tokens=2400,
+            response_format={"type": "json_object"},
+            redact_content=redact_content,
+            metadata={"conversation_id": request.get("conversation_id"), "request_id": request.get("request_id")},
+        )
+    )
+    try:
+        return DietPlanDocument.model_validate(json.loads(response.text)).model_dump(mode="json")
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def _diet_plan_success_response(state: VictusGraphState, tool_context: dict[str, Any]) -> VictusGraphState:
+    proposal = tool_context.get("proposed_action", {})
+    result = tool_context.get("last_tool_result", {})
+    planning = dict(state.get("planning", {}))
+    intake = dict(planning.get("diet_plan_intake", {}))
+    if proposal.get("arguments", {}).get("action") == "activate":
+        planning.pop("diet_plan_intake", None)
+        message = "Tu plan quedó activo. Puedes consultarlo en Plan semanal o pedirme ajustes cuando quieras."
+    else:
+        plan = proposal.get("arguments", {}).get("plan_json", {})
+        plan_id = str(result.get("data", {}).get("plan_id") or intake.get("draft_plan_id") or "")
+        planning["diet_plan_intake"] = {
+            "status": "awaiting_confirmation",
+            "draft_plan_id": plan_id,
+            "draft_plan": plan,
+            "answers": intake.get("answers", {}),
+        }
+        message = diet_plan_draft_message(plan)
+    return _merge(state, planning=planning, response={"mode": "final", "user_message": message}, node_name="agent_decision")
+
+
+def diet_plan_draft_message(plan: dict[str, Any]) -> str:
+    targets = plan.get("targets", {}) if isinstance(plan, dict) else {}
+    lines = ["## Propuesta de plan semanal", str(plan.get("description") or "Plan personalizado listo para revisar."), "", "### Objetivos diarios"]
+    lines.append(f"- Calorías: {targets.get('calories_kcal', '—')} kcal")
+    lines.append(f"- Proteínas: {targets.get('protein_g', '—')} g")
+    lines.append(f"- Carbohidratos: {targets.get('carbohydrate_g', '—')} g")
+    lines.append(f"- Grasas: {targets.get('fat_g', '—')} g")
+    for day in plan.get("days", []) if isinstance(plan, dict) else []:
+        if not isinstance(day, dict):
+            continue
+        lines.extend(["", f"### {day.get('day', 'Día')}"])
+        for meal in day.get("meals", []):
+            if not isinstance(meal, dict):
+                continue
+            foods = ", ".join(f"{item.get('name', '')} ({item.get('portion', '')})" for item in meal.get("food_items", []) if isinstance(item, dict))
+            lines.append(f"- **{meal.get('name', 'Comida')}:** {foods}")
+    lines.extend(["", "Este es un borrador: aún no está activo. ¿Quieres **aceptarlo** o **editarlo**?"])
+    return "\n".join(lines)
 
 
 def _diet_plan_intake_prompt(state: VictusGraphState) -> str:

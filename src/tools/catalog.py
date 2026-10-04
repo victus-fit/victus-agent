@@ -46,7 +46,13 @@ def _description(name: str) -> str:
             "or questions about another person."
         ),
         "profile_update": "Use when the user explicitly wants to add, modify, or remove a durable allergy, restriction, or preference.",
-        "diet_plan": "Use to save a personalized diet draft, refinement, or activation only after the user has completed the diet-plan preference intake.",
+        "diet_plan": (
+            "Use only after the diet-plan preference intake to create, refine, or activate a plan. "
+            "For create or refine, plan_json is a complete weekly document: exactly Lunes through "
+            "Domingo, positive daily nutrition targets, and two or three named meals per day. Every "
+            "meal has one or more foods with portions. Do not submit abbreviated or placeholder plans. "
+            "Create and refine save a draft for review; use activate only with an accepted draft plan_id."
+        ),
     }[name]
 
 

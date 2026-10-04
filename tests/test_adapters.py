@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -7,6 +8,12 @@ from langgraph.types import Command
 
 from adapters.cli.commands import inspect_tool, list_tool_data
 from adapters.http.app import create_app as create_chat_app
+from adapters.langgraph.engine.agent import (
+    _is_diet_plan_acceptance,
+    agent_decision,
+    advance_diet_plan_intake,
+    diet_plan_draft_message,
+)
 from adapters.langgraph.engine.graph import build_graph
 from adapters.mcp.auth import http_request_identity, resolve_identity
 from adapters.mcp.discovery import discover_tools
@@ -14,6 +21,26 @@ from adapters.mcp.invocation import invoke as invoke_mcp
 from tools.contracts import ClarificationRequest, ToolResult
 from victus_platform.llm.contracts import LLMRequest, LLMResponse
 from victus_platform.llm.litellm_client import LiteLLMClient
+
+
+def weekly_plan() -> dict[str, object]:
+    days = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+    return {
+        "description": "Plan semanal alto en proteínas.",
+        "targets": {"calories_kcal": 2200, "protein_g": 160, "carbohydrate_g": 230, "fat_g": 70},
+        "days": [
+            {
+                "day": day,
+                "focus": "Plan personalizado",
+                "calories": 2200,
+                "meals": [
+                    {"name": "Desayuno", "food_items": [{"name": "Huevos", "portion": "2 unidades"}]},
+                    {"name": "Cena", "food_items": [{"name": "Pollo", "portion": "180 g"}]},
+                ],
+            }
+            for day in days
+        ],
+    }
 
 
 def test_langgraph_executes_runtime_and_blocks_unsafe_turns() -> None:
@@ -142,118 +169,78 @@ def test_langgraph_model_selection_keeps_identity_and_text_out_of_tool_arguments
     assert "identity" in changed_identity["response"]["user_message"]
 
 
-def test_diet_plan_creation_reads_profile_then_asks_for_preferences_in_the_requested_language() -> None:
-    runtime = SequenceRuntime(
-        [
-            ToolResult(
-                status="success",
-                data={
-                    "preferences": [
-                        {"label": "Alergia", "value": "Maní"},
-                        {"label": "Cocina", "value": "Preparaciones simples"},
-                    ]
+def test_diet_plan_intake_collects_two_answers_then_generates_a_draft() -> None:
+    intake = {"status": "collecting", "step": "preferences", "answers": {}}
+    intake, question = advance_diet_plan_intake(intake, "Sin gluten; me gustan la carne y los huevos.")
+    assert question == "Perfecto. ¿Cuántas comidas al día quieres realizar?"
+    assert intake["answers"]["preferences"].startswith("Sin gluten")
+
+    intake, question = advance_diet_plan_intake(intake, "Tres comidas al día.")
+    assert question is None
+    assert intake["status"] == "ready"
+    assert intake["answers"]["meals_per_day"] == "Tres comidas al día."
+    client = SequenceClient([LLMResponse(text=json.dumps(weekly_plan()), tool_calls=[])])
+    state = {
+        "request": {"conversation_id": "c-diet", "request_id": "diet-3"},
+        "planning": {"diet_plan_intake": {**intake, "profile": {"preferences": []}}},
+        "tool_context": {"allowed_tools": ["diet_plan"], "loop_count": 0},
+    }
+    proposed = asyncio.run(agent_decision(llm_client=client, model="test")(state))
+    assert client.requests[0].operation == "agent.diet_plan_draft"
+    assert proposed["tool_context"]["proposed_action"]["arguments"]["action"] == "create"
+    assert len(proposed["tool_context"]["proposed_action"]["arguments"]["plan_json"]["days"]) == 7
+
+
+def test_diet_plan_draft_is_presented_for_acceptance_or_editing() -> None:
+    message = diet_plan_draft_message(weekly_plan())
+    assert "## Propuesta de plan semanal" in message
+    assert "### Lunes" in message
+    assert "**Desayuno:** Huevos (2 unidades)" in message
+    assert "aún no está activo" in message
+    assert "aceptarlo" in message and "editarlo" in message
+    assert _is_diet_plan_acceptance("Sí, acepto el plan")
+    assert not _is_diet_plan_acceptance("Cambia la cena del martes")
+
+
+def test_successful_draft_creation_is_presented_without_another_generation() -> None:
+    state = {
+        "request": {"original_text": "3"},
+        "planning": {"diet_plan_intake": {"status": "ready", "answers": {}}},
+        "tool_context": {
+            "allowed_tools": ["diet_plan"],
+            "loop_count": 1,
+            "proposed_action": {"tool_name": "diet_plan", "arguments": {"action": "create", "plan_json": weekly_plan()}},
+            "last_tool_result": {"status": "success", "data": {"plan_id": "draft-1"}},
+        },
+    }
+    result = asyncio.run(agent_decision(llm_client=None, model="test")(state))
+    assert result["planning"]["diet_plan_intake"]["status"] == "awaiting_confirmation"
+    assert result["planning"]["diet_plan_intake"]["draft_plan_id"] == "draft-1"
+    assert "Propuesta de plan semanal" in result["response"]["user_message"]
+
+
+def test_diet_plan_acceptance_activates_the_pending_draft_once() -> None:
+    state = {
+        "request": {"original_text": "Sí, acepto el plan"},
+        "planning": {"diet_plan_intake": {"status": "awaiting_confirmation", "draft_plan_id": "draft-1"}},
+        "tool_context": {"allowed_tools": ["diet_plan"], "loop_count": 0},
+    }
+    proposed = asyncio.run(agent_decision(llm_client=None, model="test")(state))
+    assert proposed["tool_context"]["proposed_action"]["arguments"] == {"action": "activate", "plan_id": "draft-1"}
+
+    completed = asyncio.run(
+        agent_decision(llm_client=None, model="test")(
+            {
+                **proposed,
+                "tool_context": {
+                    **proposed["tool_context"],
+                    "last_tool_result": {"status": "success", "data": {"plan_id": "draft-1"}},
                 },
-            )
-        ]
-    )
-    client = SequenceClient([LLMResponse(text="La revisaré contigo. ¿Qué alimentos prefieres?", tool_calls=[])])
-    result = asyncio.run(
-        build_graph(llm_client=client, tool_runtime=runtime).ainvoke(
-            {
-                "request": {
-                    "request_id": "diet-1",
-                    "user_id": "u1",
-                    "conversation_id": "c-diet",
-                    "raw_text": "Quiero una dieta personalizada",
-                }
             }
         )
     )
-
-    assert runtime.invocations[0].name == "profile"
-    assert runtime.invocations[0].arguments == {"section": "overview"}
-    assert result["response"]["user_message"] == "La revisaré contigo. ¿Qué alimentos prefieres?"
-    assert result["planning"]["diet_plan_intake"]["status"] == "awaiting_user_preferences"
-    assert client.requests[0].operation == "agent.diet_plan_intake"
-    assert "Reply strictly in Spanish" in client.requests[0].messages[0]["content"]
-    assert "exactly three numbered questions in this order" in client.requests[0].messages[0]["content"]
-
-    english_runtime = SequenceRuntime([ToolResult(status="success", data={"preferences": []})])
-    english_client = SequenceClient([LLMResponse(text="Let’s tailor it. Which foods do you enjoy?", tool_calls=[])])
-    english_result = asyncio.run(
-        build_graph(llm_client=english_client, tool_runtime=english_runtime).ainvoke(
-            {
-                "request": {
-                    "request_id": "diet-en-1",
-                    "user_id": "u1",
-                    "conversation_id": "c-diet-en",
-                    "raw_text": "I want to create my first diet",
-                    "locale": "en",
-                }
-            }
-        )
-    )
-    assert english_runtime.invocations[0].name == "profile"
-    assert english_result["response"]["user_message"] == "Let’s tailor it. Which foods do you enjoy?"
-    assert "Reply strictly in English" in english_client.requests[0].messages[0]["content"]
-    assert "exactly three numbered questions in this order" in english_client.requests[0].messages[0]["content"]
-
-
-def test_diet_plan_is_available_after_the_preference_intake() -> None:
-    runtime = SequenceRuntime(
-        [
-            ToolResult(status="success", data={"preferences": []}),
-            ToolResult(status="success", data={"plan_id": "plan-1"}),
-        ]
-    )
-    client = SequenceClient(
-        [
-            LLMResponse(text="Cuéntame tus preferencias para preparar el plan.", tool_calls=[]),
-            LLMResponse(
-                text="",
-                tool_calls=[
-                    {
-                        "name": "diet_plan",
-                        "arguments": {"action": "create", "plan_json": {"meals": []}},
-                    }
-                ],
-            ),
-            LLMResponse(text="Preparé el borrador.", tool_calls=[]),
-        ]
-    )
-    saver = InMemorySaver()
-    graph = build_graph(llm_client=client, tool_runtime=runtime, checkpointer=saver)
-    config = {"configurable": {"thread_id": "c-diet", "user_id": "u1"}}
-    asyncio.run(
-        graph.ainvoke(
-            {
-                "request": {
-                    "request_id": "diet-1",
-                    "user_id": "u1",
-                    "conversation_id": "c-diet",
-                    "raw_text": "Quiero una dieta personalizada",
-                }
-            },
-            config=config,
-        )
-    )
-    result = asyncio.run(
-        graph.ainvoke(
-            {
-                "request": {
-                    "request_id": "diet-2",
-                    "user_id": "u1",
-                    "conversation_id": "c-diet",
-                    "raw_text": "Quiero tres comidas, cocinar rápido y priorizar proteínas.",
-                }
-            },
-            config=config,
-        )
-    )
-
-    assert [invocation.name for invocation in runtime.invocations] == ["profile", "diet_plan"]
-    assert result["response"]["user_message"] == "Preparé el borrador."
-    assert "diet_plan_intake" not in result.get("planning", {})
+    assert "diet_plan_intake" not in completed["planning"]
+    assert "quedó activo" in completed["response"]["user_message"]
 
 
 def test_langgraph_confirmation_resumes_once_and_memory_is_user_scoped() -> None:

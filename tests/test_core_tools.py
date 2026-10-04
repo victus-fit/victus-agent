@@ -1,6 +1,9 @@
 import asyncio
 from contextlib import nullcontext
 
+import pytest
+from pydantic import ValidationError
+
 from domain.events.envelope import UserEventEnvelope
 from ops.scripts.phoenix_intent_eval import (
     build_contract_evaluator,
@@ -11,6 +14,7 @@ from ops.scripts.mcp_intent_eval import function_tools, score_case
 from tools.catalog import get_tool, list_tools
 from tools.contracts import ToolContext, ToolIdentity, ToolInvocation
 from tools.runtime import ToolRuntime
+from tools.diet_plan import DietPlanInput
 from victus_platform.llm.contracts import LLMRequest, LLMResponse
 from victus_platform.llm.litellm_client import LiteLLMClient
 from victus_platform.telemetry.phoenix import (
@@ -21,6 +25,40 @@ from victus_platform.telemetry.phoenix import (
     trace_llm_call,
     _record_llm_request,
 )
+
+
+def weekly_diet_plan() -> dict[str, object]:
+    days = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+    return {
+        "description": "Plan semanal equilibrado",
+        "targets": {"calories_kcal": 2200, "protein_g": 160, "carbohydrate_g": 220, "fat_g": 70},
+        "days": [
+            {
+                "day": day,
+                "focus": "Alimentación equilibrada",
+                "calories": 2200,
+                "meals": [
+                    {"name": "Desayuno", "food_items": [{"name": "Huevos", "portion": "2 unidades"}]},
+                    {"name": "Cena", "food_items": [{"name": "Pollo", "portion": "180 g"}]},
+                ],
+            }
+            for day in days
+        ],
+    }
+
+
+def test_diet_plan_contract_requires_a_complete_week_with_daily_meals() -> None:
+    input_data = DietPlanInput.model_validate({"action": "create", "plan_json": weekly_diet_plan()})
+    assert input_data.plan_json is not None
+    assert len(input_data.plan_json.days) == 7
+
+    incomplete = weekly_diet_plan()
+    incomplete["days"] = []
+    with pytest.raises(ValidationError):
+        DietPlanInput.model_validate({"action": "create", "plan_json": incomplete})
+
+    with pytest.raises(ValidationError):
+        DietPlanInput.model_validate({"action": "refine", "plan_json": weekly_diet_plan()})
 
 
 def test_catalog_and_capabilities_share_one_runtime() -> None:
